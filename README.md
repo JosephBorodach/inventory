@@ -92,13 +92,19 @@ before the first mutation.
 - `increment({id, by?})` — default `by = 1`.
 - `decrement({id, by?})` — default `by = 1`. Floors at 0.
 - `set_quantity({id, quantity})` — for corrections. Quantity must be a non-negative integer.
+- `lookup_barcode({barcode})` — fetch product metadata from Open Food Facts. Returns
+  `{ok, found, barcode, prefill}` where prefill has `name`, `brand`, `image_url` when
+  the barcode is known. Hits are cached in the state file so repeat lookups don't
+  hammer the API. Doesn't mutate items.
+- `scan_barcode({barcode})` — idempotent add-a-package-if-known. If an item with that
+  barcode exists, increments by its `package_qty` and returns `{ok, matched: true, item, added}`.
+  Otherwise falls back to `lookup_barcode` and returns `{ok, matched: false, barcode, prefill}`
+  so the caller can pop a form to save a new item.
 - `status()` — probe verb. Returns `{kind: "inventory_tracker", state_sensor, events_sensor, item_count}`.
 
 - `press({id})` — Stream Deck callback. Decrement by 1, flash the new count on
   the paired deck key for a few seconds, then revert to the item icon. Per-slot
   cancellable so mashing a key doesn't stack revert timers.
-
-Deferred to a later release: `scan_barcode`, `lookup_barcode`.
 
 ## Stream Deck integration
 
