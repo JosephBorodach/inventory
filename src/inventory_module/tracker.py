@@ -335,11 +335,18 @@ class Tracker(Generic):
     async def _push_state_snapshot(self) -> None:
         if self._state_sensor is None:
             return
+        # Viam's SensorReading type doesn't allow None; the sensor's
+        # get_readings round-trip coerces null → 0, which would collide
+        # with legitimate 0 values (e.g. deck_slot=0). Strip null-valued
+        # keys so consumers treat "key absent" as null.
         snapshot = {
             "kind": "inventory_snapshot",
             "source": self.name,
             "at": _now_iso(),
-            "items": self._snapshot_items(),
+            "items": [
+                {k: v for k, v in item.items() if v is not None}
+                for item in self._snapshot_items()
+            ],
         }
         try:
             await self._state_sensor.do_command({"command": "push_event", "event": snapshot})
