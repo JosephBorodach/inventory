@@ -1,0 +1,15 @@
+{
+    "module_id": "joseph:inventory",
+    "visibility": "public",
+    "url": "https://github.com/JosephBorodach/inventory",
+    "description": "Count keyed items, decrement via web app or physical device. Publishes state to a queue sensor for fast reads; pushes change events for audit trails and triggers.",
+    "models": [
+        {
+            "api": "rdk:component:generic",
+            "model": "joseph:inventory:tracker",
+            "markdown_link": "README.md#tracker"
+        }
+    ],
+    "entrypoint": "run.sh",
+    "first_run": ""
+}
