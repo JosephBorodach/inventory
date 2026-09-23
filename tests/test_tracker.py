@@ -166,6 +166,24 @@ async def test_state_snapshot_pushed_on_mutation(tmp_path):
     assert len(latest["items"]) == 1
 
 
+async def test_state_snapshot_strips_null_fields(tmp_path):
+    t, state_sensor, _ = _make(tmp_path)
+    await _add_egg(t)
+    latest = [c for c in state_sensor.commands if c.get("command") == "push_event"][-1]["event"]
+    item = latest["items"][0]
+    for null_key in ("barcode", "deck_page", "deck_slot"):
+        assert null_key not in item, f"expected {null_key} stripped when null"
+
+
+async def test_state_snapshot_keeps_zero_valued_fields(tmp_path):
+    t, state_sensor, _ = _make(tmp_path)
+    await _add_egg(t, deck_page=0, deck_slot=0)
+    latest = [c for c in state_sensor.commands if c.get("command") == "push_event"][-1]["event"]
+    item = latest["items"][0]
+    assert item["deck_page"] == 0
+    assert item["deck_slot"] == 0
+
+
 async def test_change_event_pushed_when_events_sensor_configured(tmp_path):
     t, _, events_sensor = _make(tmp_path, with_events=True)
     item = await _add_egg(t)
