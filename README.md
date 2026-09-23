@@ -30,11 +30,13 @@ batteries — but the mechanics don't care what you're counting.
 }
 ```
 
-| Attribute       | Type   | Required | Description                                                                      |
-|-----------------|--------|----------|----------------------------------------------------------------------------------|
-| `state_sensor`  | string | yes      | Name of a `viam:event-queue:sensor` (`queue_capacity: 1`) holding the snapshot.  |
-| `events_sensor` | string | no       | Optional queue sensor for change-event fanout. Enables audit trail + triggers.   |
-| `state_path`    | string | no       | Override the JSON store path. Defaults to `~/.viam/inventory.json`.              |
+| Attribute        | Type   | Required | Description                                                                      |
+|------------------|--------|----------|----------------------------------------------------------------------------------|
+| `state_sensor`   | string | yes      | Name of a `viam:event-queue:sensor` (`queue_capacity: 1`) holding the snapshot.  |
+| `events_sensor`  | string | no       | Optional queue sensor for change-event fanout. Enables audit trail + triggers.   |
+| `streamdeck`     | string | no       | Optional `erh:viam-streamdeck:streamdeck-any` service name for deck fanout.      |
+| `deck_key_count` | int    | no       | Number of physical keys on the deck. Defaults to `15` (standard Stream Deck).    |
+| `state_path`     | string | no       | Override the JSON store path. Defaults to `~/.viam/inventory.json`.              |
 
 The `state_sensor` should be configured with `queue_capacity: 1` and no data
 capture — its purpose is to hold the latest snapshot in memory for fast reads.
@@ -92,8 +94,34 @@ before the first mutation.
 - `set_quantity({id, quantity})` — for corrections. Quantity must be a non-negative integer.
 - `status()` — probe verb. Returns `{kind: "inventory_tracker", state_sensor, events_sensor, item_count}`.
 
-Deferred to a later release: `press` (Stream Deck callback), `scan_barcode`,
-`lookup_barcode`.
+- `press({id})` — Stream Deck callback. Decrement by 1, flash the new count on
+  the paired deck key for a few seconds, then revert to the item icon. Per-slot
+  cancellable so mashing a key doesn't stack revert timers.
+
+Deferred to a later release: `scan_barcode`, `lookup_barcode`.
+
+## Stream Deck integration
+
+When the tracker's `streamdeck` attribute names an `erh:viam-streamdeck:streamdeck-any`
+service, the tracker keeps that deck's keys in sync with the items:
+
+- On boot and after every mutation, it computes each key config and calls the
+  deck's `update_display` DoCommand. Items with `deck_page: 0` and a valid
+  `deck_slot` appear as keys; empty slots are cleared.
+- Each key's callback fires this tracker's `press` DoCommand with the item id,
+  so a physical button press decrements the corresponding count.
+- After a press, the key briefly shows the new count as text, then reverts to
+  the item's icon.
+
+V1 constraints:
+- **Single page only.** `deck_page` must be `0` (or `null` for items that don't
+  appear on the deck). Multi-page support is deferred — the schema is
+  future-proof but this release ignores non-zero `deck_page`.
+- **No slot collisions.** Two items cannot share the same `(deck_page, deck_slot)`.
+  Attempting to add or edit into an occupied slot raises a clear error.
+- **Icons render as emoji.** The tracker sets `text_font: NotoEmoji-Regular.tff`
+  (bundled with `erh:viam-streamdeck`) so any single emoji renders directly on
+  the key.
 
 ### Change events
 
