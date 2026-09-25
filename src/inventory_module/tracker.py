@@ -162,22 +162,27 @@ class Tracker(Generic):
         return t
 
     @classmethod
-    def validate_config(cls, config: ComponentConfig) -> Sequence[str]:
+    def validate_config(cls, config: ComponentConfig) -> tuple[Sequence[str], Sequence[str]]:
         attrs = struct_to_dict(config.attributes)
         state_sensor = attrs.get("state_sensor")
         if not isinstance(state_sensor, str) or not state_sensor:
             raise ValueError("`state_sensor` is required")
-        deps = [state_sensor]
+        required = [state_sensor]
+        optional: list[str] = []
         events_sensor = attrs.get("events_sensor")
         if events_sensor is not None:
             if not isinstance(events_sensor, str) or not events_sensor:
                 raise ValueError("`events_sensor` must be a non-empty string")
-            deps.append(events_sensor)
+            required.append(events_sensor)
         streamdeck = attrs.get("streamdeck")
         if streamdeck is not None:
             if not isinstance(streamdeck, str) or not streamdeck:
                 raise ValueError("`streamdeck` must be a non-empty string")
-            deps.append(streamdeck)
+            # Optional so the streamdeck can declare a hard dep on this tracker
+            # (needed for its key callbacks to be able to reach us) without a
+            # circular required-dep loop. Optional deps still trigger our
+            # reconfigure when they become available.
+            optional.append(streamdeck)
         deck_key_count = attrs.get("deck_key_count")
         if deck_key_count is not None and (
             isinstance(deck_key_count, bool)
@@ -185,7 +190,7 @@ class Tracker(Generic):
             or deck_key_count <= 0
         ):
             raise ValueError("`deck_key_count` must be a positive integer")
-        return deps
+        return required, optional
 
     def reconfigure(
         self,
