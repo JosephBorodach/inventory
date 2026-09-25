@@ -94,6 +94,14 @@ def _validate_barcode(value: Any) -> str | None:
     return value.strip()
 
 
+def _validate_image(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("`image` must be a non-empty string or null")
+    return value.strip()
+
+
 def _require_barcode_input(payload: Any) -> str:
     if not isinstance(payload, dict):
         raise ValueError("`barcode` is required")
@@ -346,6 +354,7 @@ class Tracker(Generic):
                 f"deck slot page={deck_page} slot={deck_slot} is already assigned to another item"
             )
         barcode = _validate_barcode(payload.get("barcode"))
+        image = _validate_image(payload.get("image"))
         now = _now_iso()
         item = {
             "id": _new_id(),
@@ -354,6 +363,7 @@ class Tracker(Generic):
             "quantity": 0,
             "package_qty": package_qty,
             "icon": icon,
+            "image": image,
             "deck_page": deck_page,
             "deck_slot": deck_slot,
             "created_at": now,
@@ -399,6 +409,8 @@ class Tracker(Generic):
                 item["icon"] = _require_non_empty_string("icon", payload["icon"])
             if "barcode" in payload:
                 item["barcode"] = _validate_barcode(payload["barcode"])
+            if "image" in payload:
+                item["image"] = _validate_image(payload["image"])
             item["deck_page"] = deck_page
             item["deck_slot"] = deck_slot
             item["updated_at"] = _now_iso()
@@ -527,12 +539,10 @@ class Tracker(Generic):
             "method": "do_command",
             "args": [{"command": "press", "id": item["id"]}],
         }
-        # Prefer rendering the item's emoji as an image: the streamdeck module
-        # renders text via freetype, which can't draw characters above U+FFFF
-        # (where most emoji live). If the streamdeck's assets include a PNG
-        # named after the emoji's codepoint (e.g. "1f345.png" for 🍅) it
-        # renders cleanly; otherwise we fall back to text.
-        image_name = _emoji_to_image_name(item.get("icon", ""))
+        # Rendering priority: explicit item.image (real product photo the
+        # user uploaded), then emoji-codepoint Twemoji PNG (supra-BMP emoji
+        # can't render as text), then plain text (BMP characters only).
+        image_name = item.get("image") or _emoji_to_image_name(item.get("icon", ""))
         if text_override is not None:
             base["text"] = text_override
             base["text_font"] = DECK_TEXT_FONT
