@@ -103,6 +103,24 @@ def _require_barcode_input(payload: Any) -> str:
     return barcode.strip()
 
 
+def _emoji_to_image_name(icon: str) -> str | None:
+    """Return the Twemoji-style PNG filename for an emoji, or None for BMP text.
+
+    Base-plane characters (< U+10000) render fine as text; supra-BMP ones
+    (most modern emoji) don't and need to be rendered via image. The name is
+    built from the first codepoint of the icon — good enough for the single-
+    codepoint emojis this tracker's UI encourages; multi-codepoint sequences
+    (ZWJ, skin-tone modifiers) would need per-item mapping and aren't needed
+    yet.
+    """
+    if not icon:
+        return None
+    codepoint = ord(icon[0])
+    if codepoint < 0x10000:
+        return None
+    return f"{codepoint:x}.png"
+
+
 def _fetch_openfoodfacts(barcode: str) -> dict | None:
     """Fetch a product from Open Food Facts.
 
@@ -504,13 +522,28 @@ class Tracker(Generic):
             LOGGER.warning("state snapshot push failed: %s", e)
 
     def _deck_key_config(self, item: dict, text_override: str | None = None) -> dict:
-        return {
-            "text": text_override if text_override is not None else item["icon"],
-            "text_font": DECK_TEXT_FONT,
+        base = {
             "component": self.name,
             "method": "do_command",
             "args": [{"command": "press", "id": item["id"]}],
         }
+        # Prefer rendering the item's emoji as an image: the streamdeck module
+        # renders text via freetype, which can't draw characters above U+FFFF
+        # (where most emoji live). If the streamdeck's assets include a PNG
+        # named after the emoji's codepoint (e.g. "1f345.png" for 🍅) it
+        # renders cleanly; otherwise we fall back to text.
+        image_name = _emoji_to_image_name(item.get("icon", ""))
+        if text_override is not None:
+            base["text"] = text_override
+            base["text_font"] = DECK_TEXT_FONT
+            if image_name:
+                base["image"] = image_name
+        elif image_name:
+            base["image"] = image_name
+        else:
+            base["text"] = item["icon"]
+            base["text_font"] = DECK_TEXT_FONT
+        return base
 
     def _slotted_items_on_page(self, page: int = 0) -> dict[int, dict]:
         out: dict[int, dict] = {}

@@ -367,7 +367,9 @@ async def test_streamdeck_receives_layout_push_on_add(tmp_path):
     updates = [c for c in deck.commands if "update_display" in c]
     assert updates, "expected an update_display call"
     latest_keys = updates[-1]["update_display"]["keys"]
-    assert latest_keys["3"]["text"] == "🥚"
+    # 🥚 is U+1F95A — supra-BMP, so it gets rendered as an image, not text.
+    assert latest_keys["3"]["image"] == "1f95a.png"
+    assert "text" not in latest_keys["3"]
     assert latest_keys["3"]["method"] == "do_command"
     assert latest_keys["3"]["component"] == "inventory"
     assert latest_keys["3"]["args"][0] == {"command": "press", "id": mock_item_id(t)}
