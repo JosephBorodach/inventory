@@ -371,7 +371,7 @@ async def test_streamdeck_receives_layout_push_on_add(tmp_path):
     assert latest_keys["3"]["method"] == "do_command"
     assert latest_keys["3"]["component"] == "inventory"
     assert latest_keys["3"]["args"][0] == {"command": "press", "id": mock_item_id(t)}
-    assert latest_keys["0"]["text"] == ""
+    assert latest_keys["0"]["text"] == " "
 
 
 async def test_streamdeck_layout_uses_configured_key_count(tmp_path):
