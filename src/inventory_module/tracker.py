@@ -26,6 +26,7 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_STATE_PATH = "~/.viam/inventory.json"
 DEFAULT_DECK_KEY_COUNT = 15
 DEFAULT_REVERT_DELAY_SEC = 3.0
+DEFAULT_DECK_REFRESH_SEC = 30
 DECK_TEXT_FONT = "NotoEmoji-Regular.ttf"
 SCHEMA_VERSION = 1
 
@@ -150,6 +151,8 @@ class Tracker(Generic):
         self._state: dict = {"schema_version": SCHEMA_VERSION, "items": []}
         self._state_lock: asyncio.Lock | None = None
         self._boot_task: asyncio.Task | None = None
+        self._deck_refresh_task: asyncio.Task | None = None
+        self._deck_refresh_sec: float = DEFAULT_DECK_REFRESH_SEC
 
     @classmethod
     def new(
@@ -248,6 +251,11 @@ class Tracker(Generic):
             self._boot_task = asyncio.create_task(self._on_boot())
         except RuntimeError:
             self._boot_task = None
+
+        if self._deck_refresh_task and not self._deck_refresh_task.done():
+            self._deck_refresh_task.cancel()
+        with contextlib.suppress(RuntimeError):
+            self._deck_refresh_task = asyncio.create_task(self._deck_refresh_loop())
 
     # -- Persistence --------------------------------------------------
 
@@ -451,6 +459,21 @@ class Tracker(Generic):
     async def _on_boot(self) -> None:
         await self._push_state_snapshot()
         await self._push_full_deck_layout()
+
+    async def _deck_refresh_loop(self) -> None:
+        # Viam doesn't reliably re-fire our reconfigure when an optional
+        # dep (streamdeck) becomes available after we booted. Refresh the
+        # deck layout on a slow cadence so it self-heals — cheap and
+        # idempotent (each push is just an update_display of the current
+        # snapshot). No-op when the streamdeck dep isn't resolved yet.
+        while True:
+            try:
+                await asyncio.sleep(self._deck_refresh_sec)
+            except asyncio.CancelledError:
+                return
+            if self._streamdeck is None:
+                continue
+            await self._push_full_deck_layout()
 
     async def _on_change(
         self, event_type: str, item_snapshot: dict, delta: int, new_quantity: int
