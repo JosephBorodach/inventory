@@ -95,10 +95,13 @@ def _validate_barcode(value: Any) -> str | None:
 
 
 def _validate_image(value: Any) -> str | None:
-    if value is None:
+    # Empty string is accepted as "clear the image" — it's what proto null
+    # gets coerced to in some CLI/MCP paths, and it's a natural way for
+    # callers to unset the field.
+    if value is None or value == "":
         return None
     if not isinstance(value, str) or not value.strip():
-        raise ValueError("`image` must be a non-empty string or null")
+        raise ValueError("`image` must be a string or null")
     return value.strip()
 
 
