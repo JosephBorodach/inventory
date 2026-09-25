@@ -497,10 +497,11 @@ class Tracker(Generic):
 
     def _empty_slot_config(self) -> dict:
         # Empty slot still needs component + method to pass the streamdeck
-        # module's key validation (it rejects keys without either). Self-
-        # reference the tracker itself with a status no-op if pressed.
+        # module's key validation, and non-empty text (or an image) so the
+        # module doesn't reject with "nothing to display for key". Single
+        # space renders visually blank while satisfying both checks.
         return {
-            "text": "",
+            "text": " ",
             "component": self.name,
             "method": "do_command",
             "args": [{"command": "status"}],
