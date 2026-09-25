@@ -26,7 +26,7 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_STATE_PATH = "~/.viam/inventory.json"
 DEFAULT_DECK_KEY_COUNT = 15
 DEFAULT_REVERT_DELAY_SEC = 3.0
-DECK_TEXT_FONT = "NotoEmoji-Regular.tff"
+DECK_TEXT_FONT = "NotoEmoji-Regular.ttf"
 SCHEMA_VERSION = 1
 
 OPENFOODFACTS_URL = "https://world.openfoodfacts.org/api/v0/product/{barcode}.json"
@@ -495,6 +495,17 @@ class Tracker(Generic):
                 out[slot] = item
         return out
 
+    def _empty_slot_config(self) -> dict:
+        # Empty slot still needs component + method to pass the streamdeck
+        # module's key validation (it rejects keys without either). Self-
+        # reference the tracker itself with a status no-op if pressed.
+        return {
+            "text": "",
+            "component": self.name,
+            "method": "do_command",
+            "args": [{"command": "status"}],
+        }
+
     async def _push_full_deck_layout(self) -> None:
         if self._streamdeck is None:
             return
@@ -505,7 +516,7 @@ class Tracker(Generic):
             if item is not None:
                 keys[str(slot)] = self._deck_key_config(item)
             else:
-                keys[str(slot)] = {"text": "", "text_font": DECK_TEXT_FONT}
+                keys[str(slot)] = self._empty_slot_config()
         try:
             await self._streamdeck.do_command({"update_display": {"keys": keys}})
         except Exception as e:
