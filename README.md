@@ -103,6 +103,12 @@ before the first mutation.
   so the caller can pop a form to save a new item.
 - `status()` — probe verb. Returns `{kind: "inventory_tracker", state_sensor, events_sensor, item_count}`.
 
+- `reorder_deck({page?, order})` — atomic slot reassignment. `order` is a list
+  of item ids; they are assigned slots `0..N-1` on the given page (default 0).
+  Any items previously on that page but absent from `order` are removed from
+  the deck. Used by the web app's drag-to-reorder UI; safer than sequential
+  `edit_item` calls because it can swap slots without hitting the "already
+  assigned" collision check mid-move.
 - `press({id})` — Stream Deck callback. Decrement by 1, flash the new count on
   the paired deck key for a few seconds, then revert to the item icon. Per-slot
   cancellable so mashing a key doesn't stack revert timers.

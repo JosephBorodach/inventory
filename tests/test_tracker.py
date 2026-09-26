@@ -419,6 +419,88 @@ def mock_item_id(tracker: Tracker) -> str:
     return tracker._state["items"][0]["id"]
 
 
+# -- reorder_deck ------------------------------------------------------
+
+
+async def test_reorder_deck_swaps_slots_atomically(tmp_path):
+    t, _, _, _ = _make(tmp_path, with_streamdeck=True)
+    a = await _add_egg(t, name="Aspirin", deck_page=0, deck_slot=0)
+    b = await _add_egg(t, name="Bread", deck_page=0, deck_slot=1)
+    c = await _add_egg(t, name="Cola", deck_page=0, deck_slot=2)
+    resp = await t.do_command({
+        "command": "reorder_deck",
+        "order": [c["id"], a["id"], b["id"]],
+    })
+    assert resp == {"ok": True}
+    assert t._find_item(c["id"])["deck_slot"] == 0
+    assert t._find_item(a["id"])["deck_slot"] == 1
+    assert t._find_item(b["id"])["deck_slot"] == 2
+
+
+async def test_reorder_deck_can_swap_two_items(tmp_path):
+    # Sequential edit_item calls would fail here (collision when moving A into
+    # B's slot). Reorder does it atomically.
+    t, _, _, _ = _make(tmp_path, with_streamdeck=True)
+    a = await _add_egg(t, name="A", deck_page=0, deck_slot=0)
+    b = await _add_egg(t, name="B", deck_page=0, deck_slot=1)
+    await t.do_command({"command": "reorder_deck", "order": [b["id"], a["id"]]})
+    assert t._find_item(a["id"])["deck_slot"] == 1
+    assert t._find_item(b["id"])["deck_slot"] == 0
+
+
+async def test_reorder_deck_removes_items_not_in_order(tmp_path):
+    t, _, _, _ = _make(tmp_path, with_streamdeck=True)
+    a = await _add_egg(t, name="A", deck_page=0, deck_slot=0)
+    b = await _add_egg(t, name="B", deck_page=0, deck_slot=1)
+    await t.do_command({"command": "reorder_deck", "order": [b["id"]]})
+    assert t._find_item(a["id"])["deck_page"] is None
+    assert t._find_item(a["id"])["deck_slot"] is None
+    assert t._find_item(b["id"])["deck_slot"] == 0
+
+
+async def test_reorder_deck_can_add_previously_unslotted(tmp_path):
+    t, _, _, _ = _make(tmp_path, with_streamdeck=True)
+    a = await _add_egg(t, name="A", deck_page=0, deck_slot=0)
+    b = await _add_egg(t, name="B")  # not on deck
+    await t.do_command({"command": "reorder_deck", "order": [a["id"], b["id"]]})
+    assert t._find_item(b["id"])["deck_page"] == 0
+    assert t._find_item(b["id"])["deck_slot"] == 1
+
+
+async def test_reorder_deck_rejects_unknown_id(tmp_path):
+    t, _, _, _ = _make(tmp_path)
+    await _add_egg(t, deck_page=0, deck_slot=0)
+    with pytest.raises(ValueError):
+        await t.do_command({"command": "reorder_deck", "order": ["nope"]})
+
+
+async def test_reorder_deck_rejects_duplicates(tmp_path):
+    t, _, _, _ = _make(tmp_path)
+    a = await _add_egg(t, deck_page=0, deck_slot=0)
+    with pytest.raises(ValueError, match="duplicate"):
+        await t.do_command({"command": "reorder_deck", "order": [a["id"], a["id"]]})
+
+
+async def test_reorder_deck_rejects_overflow(tmp_path):
+    t, _, _, _ = _make(tmp_path, deck_key_count=2)
+    ids = [(await _add_egg(t, name=f"X{i}"))["id"] for i in range(3)]
+    with pytest.raises(ValueError, match="deck only"):
+        await t.do_command({"command": "reorder_deck", "order": ids})
+
+
+async def test_reorder_deck_pushes_layout(tmp_path):
+    t, _, _, deck = _make(tmp_path, with_streamdeck=True)
+    a = await _add_egg(t, name="A", deck_page=0, deck_slot=0)
+    b = await _add_egg(t, name="B", deck_page=0, deck_slot=1)
+    deck.commands.clear()
+    await t.do_command({"command": "reorder_deck", "order": [b["id"], a["id"]]})
+    updates = [c for c in deck.commands if "update_display" in c]
+    assert updates, "expected a layout push after reorder"
+    keys = updates[-1]["update_display"]["keys"]
+    assert keys["0"]["text"].startswith("B ")
+    assert keys["1"]["text"].startswith("A ")
+
+
 # -- threshold + deck color -------------------------------------------
 
 

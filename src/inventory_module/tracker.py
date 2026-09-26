@@ -630,6 +630,51 @@ class Tracker(Generic):
         except Exception as e:
             LOGGER.warning("deck layout push failed: %s", e)
 
+    async def _reorder_deck(self, payload: Any) -> dict:
+        # Atomic slot reassignment. Given an ordered list of item IDs, assign
+        # slots 0..N-1 to them and clear deck_page/deck_slot on any items
+        # that were previously on this page but are absent from `order` (so
+        # dragging an item OUT of the deck section works too). We do this in
+        # one lock so we can't hit spurious slot-collision errors mid-reorder
+        # the way sequential edit_item calls would.
+        if not isinstance(payload, dict):
+            raise ValueError("payload must be an object")
+        page_raw = payload.get("page", 0)
+        page = _optional_non_neg_int("page", page_raw) or 0
+        if page != 0:
+            raise ValueError("`page` must be 0 in v1; multi-page not yet supported")
+        order = payload.get("order")
+        if not isinstance(order, list):
+            raise ValueError("`order` must be a list of item ids")
+        if len(order) > self._deck_key_count:
+            raise ValueError(
+                f"`order` has {len(order)} ids but deck only has {self._deck_key_count} keys"
+            )
+        if len(set(order)) != len(order):
+            raise ValueError("`order` contains duplicate ids")
+        assert self._state_lock is not None
+        async with self._state_lock:
+            for item_id in order:
+                if not isinstance(item_id, str) or not item_id:
+                    raise ValueError("every entry in `order` must be a non-empty string id")
+                self._require_item(item_id)
+            keep = set(order)
+            now = _now_iso()
+            for item in self._state["items"]:
+                if item.get("deck_page") == page and item.get("id") not in keep:
+                    item["deck_page"] = None
+                    item["deck_slot"] = None
+                    item["updated_at"] = now
+            for slot, item_id in enumerate(order):
+                item = self._require_item(item_id)
+                item["deck_page"] = page
+                item["deck_slot"] = slot
+                item["updated_at"] = now
+            self._save_state()
+        await self._push_state_snapshot()
+        await self._push_full_deck_layout()
+        return {"ok": True}
+
     async def _press(self, payload: Any) -> dict:
         if not isinstance(payload, dict) or not payload.get("id"):
             raise ValueError("`id` is required")
@@ -754,6 +799,8 @@ class Tracker(Generic):
             return await self._adjust_quantity(command, direction=-1, event_type="item_decremented")
         if verb == "set_quantity":
             return await self._set_quantity(command)
+        if verb == "reorder_deck":
+            return await self._reorder_deck(command)
         if verb == "press":
             return await self._press(command)
         if verb == "lookup_barcode":
