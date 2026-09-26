@@ -112,11 +112,7 @@ def _threshold_color(item: dict) -> str | None:
     if threshold is None:
         return None
     qty = int(item.get("quantity", 0))
-    if qty > threshold:
-        return "green"
-    if qty < threshold:
-        return "red"
-    return "gray"
+    return "green" if qty > threshold else "red"
 
 
 def _validate_image(value: Any) -> str | None:

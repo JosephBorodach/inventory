@@ -127,8 +127,8 @@ service, the tracker keeps that deck's keys in sync with the items:
   the item's icon.
 
 Each key's background color reflects the item's low-stock state relative to its
-optional `threshold`: green when above, red when below, gray at exactly the
-threshold. Items without a threshold render on the default (black) background.
+optional `threshold`: green when above the threshold, red when at-or-below.
+Items without a threshold render on the default (black) background.
 
 V1 constraints:
 - **Single page only.** `deck_page` must be `0` (or `null` for items that don't

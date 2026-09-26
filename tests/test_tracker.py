@@ -544,12 +544,14 @@ async def test_deck_key_color_above_threshold_is_green(tmp_path):
     assert keys["3"]["text_color"] == "white"
 
 
-async def test_deck_key_color_at_threshold_is_gray(tmp_path):
+async def test_deck_key_color_at_threshold_is_red(tmp_path):
+    # At-or-below the threshold is red — the threshold acts as "you should
+    # already be reordering when you hit this level."
     t, _, _, deck = _make(tmp_path, with_streamdeck=True)
     item = await _add_egg(t, deck_page=0, deck_slot=3, threshold=2)
     await t._set_quantity({"id": item["id"], "quantity": 2})
     keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
-    assert keys["3"]["color"] == "gray"
+    assert keys["3"]["color"] == "red"
 
 
 async def test_deck_key_color_below_threshold_is_red(tmp_path):
