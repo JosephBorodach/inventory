@@ -53,6 +53,7 @@ barcode       string | null   "0016000275270", null if unassigned
 quantity      number          current count, floors at 0
 package_qty   number          default add amount (e.g. eggs come 12 to a carton)
 icon          string          single emoji, e.g. "🥚"
+threshold     integer | null  low-stock threshold; drives deck key color. null = no color
 deck_page     integer | null  Stream Deck page index; null = not on deck
 deck_slot     integer | null  Stream Deck key index; null = not on deck
 created_at    iso timestamp
@@ -86,8 +87,8 @@ before the first mutation.
 
 ### Mutations (DoCommand verbs)
 
-- `add_item({name, package_qty, icon, deck_page?, deck_slot?, barcode?})` — returns the new item. Quantity starts at 0.
-- `edit_item({id, name?, package_qty?, icon?, deck_page?, deck_slot?, barcode?})` — partial patch. **Rejects `quantity`**; use the quantity verbs below.
+- `add_item({name, package_qty, icon, deck_page?, deck_slot?, barcode?, threshold?})` — returns the new item. Quantity starts at 0.
+- `edit_item({id, name?, package_qty?, icon?, deck_page?, deck_slot?, barcode?, threshold?})` — partial patch. **Rejects `quantity`**; use the quantity verbs below.
 - `delete_item({id})`
 - `increment({id, by?})` — default `by = 1`.
 - `decrement({id, by?})` — default `by = 1`. Floors at 0.
@@ -118,6 +119,10 @@ service, the tracker keeps that deck's keys in sync with the items:
   so a physical button press decrements the corresponding count.
 - After a press, the key briefly shows the new count as text, then reverts to
   the item's icon.
+
+Each key's background color reflects the item's low-stock state relative to its
+optional `threshold`: green when above, red when below, gray at exactly the
+threshold. Items without a threshold render on the default (black) background.
 
 V1 constraints:
 - **Single page only.** `deck_page` must be `0` (or `null` for items that don't

@@ -94,6 +94,31 @@ def _validate_barcode(value: Any) -> str | None:
     return value.strip()
 
 
+def _validate_threshold(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise ValueError("`threshold` must be a non-negative integer or null")
+    if isinstance(value, float) and not value.is_integer():
+        raise ValueError("`threshold` must be a non-negative integer or null")
+    ival = int(value)
+    if ival < 0:
+        raise ValueError("`threshold` must be a non-negative integer or null")
+    return ival
+
+
+def _threshold_color(item: dict) -> str | None:
+    threshold = item.get("threshold")
+    if threshold is None:
+        return None
+    qty = int(item.get("quantity", 0))
+    if qty > threshold:
+        return "green"
+    if qty < threshold:
+        return "red"
+    return "gray"
+
+
 def _validate_image(value: Any) -> str | None:
     # Empty string is accepted as "clear the image" — it's what proto null
     # gets coerced to in some CLI/MCP paths, and it's a natural way for
@@ -361,6 +386,7 @@ class Tracker(Generic):
             )
         barcode = _validate_barcode(payload.get("barcode"))
         image = _validate_image(payload.get("image"))
+        threshold = _validate_threshold(payload.get("threshold"))
         now = _now_iso()
         item = {
             "id": _new_id(),
@@ -370,6 +396,7 @@ class Tracker(Generic):
             "package_qty": package_qty,
             "icon": icon,
             "image": image,
+            "threshold": threshold,
             "deck_page": deck_page,
             "deck_slot": deck_slot,
             "created_at": now,
@@ -422,6 +449,8 @@ class Tracker(Generic):
                 item["barcode"] = _validate_barcode(payload["barcode"])
             if "image" in payload:
                 item["image"] = _validate_image(payload["image"])
+            if "threshold" in payload:
+                item["threshold"] = _validate_threshold(payload["threshold"])
             item["deck_page"] = deck_page
             item["deck_slot"] = deck_slot
             item["updated_at"] = _now_iso()
@@ -550,12 +579,17 @@ class Tracker(Generic):
         # Font is intentionally the module default (ASCII-safe); emoji fonts
         # can't render supra-BMP glyphs and product photos look muddy at
         # 72×72, so we lean on the always-visible name + count instead.
-        return {
+        cfg: dict[str, Any] = {
             "text": f"{item.get('name', '')} {int(item.get('quantity', 0))}",
             "component": self.name,
             "method": "do_command",
             "args": [{"command": "press", "id": item["id"]}],
         }
+        color = _threshold_color(item)
+        if color is not None:
+            cfg["color"] = color
+            cfg["text_color"] = "white"
+        return cfg
 
     def _slotted_items_on_page(self, page: int = 0) -> dict[int, dict]:
         out: dict[int, dict] = {}

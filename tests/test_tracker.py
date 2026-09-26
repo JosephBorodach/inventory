@@ -417,3 +417,70 @@ async def test_no_streamdeck_no_deck_calls(tmp_path):
 
 def mock_item_id(tracker: Tracker) -> str:
     return tracker._state["items"][0]["id"]
+
+
+# -- threshold + deck color -------------------------------------------
+
+
+async def test_add_item_threshold_defaults_to_null(tmp_path):
+    t, _, _, _ = _make(tmp_path)
+    item = await _add_egg(t)
+    assert item["threshold"] is None
+
+
+async def test_add_item_accepts_threshold(tmp_path):
+    t, _, _, _ = _make(tmp_path)
+    item = await _add_egg(t, threshold=5)
+    assert item["threshold"] == 5
+
+
+async def test_add_item_rejects_negative_threshold(tmp_path):
+    t, _, _, _ = _make(tmp_path)
+    with pytest.raises(ValueError, match="threshold"):
+        await _add_egg(t, threshold=-1)
+
+
+async def test_edit_item_can_set_and_clear_threshold(tmp_path):
+    t, _, _, _ = _make(tmp_path)
+    item = await _add_egg(t)
+    r = await t._edit_item({"id": item["id"], "threshold": 3})
+    assert r["item"]["threshold"] == 3
+    r = await t._edit_item({"id": item["id"], "threshold": None})
+    assert r["item"]["threshold"] is None
+    # Empty string also clears — matches CLI/MCP null coercion behavior.
+    r = await t._edit_item({"id": item["id"], "threshold": 7})
+    r = await t._edit_item({"id": item["id"], "threshold": ""})
+    assert r["item"]["threshold"] is None
+
+
+async def test_deck_key_color_above_threshold_is_green(tmp_path):
+    t, _, _, deck = _make(tmp_path, with_streamdeck=True)
+    item = await _add_egg(t, deck_page=0, deck_slot=3, threshold=2)
+    await t._set_quantity({"id": item["id"], "quantity": 5})
+    keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
+    assert keys["3"]["color"] == "green"
+    assert keys["3"]["text_color"] == "white"
+
+
+async def test_deck_key_color_at_threshold_is_gray(tmp_path):
+    t, _, _, deck = _make(tmp_path, with_streamdeck=True)
+    item = await _add_egg(t, deck_page=0, deck_slot=3, threshold=2)
+    await t._set_quantity({"id": item["id"], "quantity": 2})
+    keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
+    assert keys["3"]["color"] == "gray"
+
+
+async def test_deck_key_color_below_threshold_is_red(tmp_path):
+    t, _, _, deck = _make(tmp_path, with_streamdeck=True)
+    item = await _add_egg(t, deck_page=0, deck_slot=3, threshold=2)
+    await t._set_quantity({"id": item["id"], "quantity": 1})
+    keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
+    assert keys["3"]["color"] == "red"
+
+
+async def test_deck_key_no_color_when_threshold_unset(tmp_path):
+    t, _, _, deck = _make(tmp_path, with_streamdeck=True)
+    await _add_egg(t, deck_page=0, deck_slot=3)
+    keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
+    assert "color" not in keys["3"]
+    assert "text_color" not in keys["3"]
