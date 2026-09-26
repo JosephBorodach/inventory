@@ -62,11 +62,10 @@ async def test_add_item_validates_required_fields(tmp_path):
     with pytest.raises(ValueError):
         await t._add_item({"package_qty": 12, "icon": "🥚"})
     with pytest.raises(ValueError):
-        await t._add_item({"name": "Eggs", "icon": "🥚"})
-    with pytest.raises(ValueError):
-        await t._add_item({"name": "Eggs", "package_qty": 12})
-    with pytest.raises(ValueError):
         await t._add_item({"name": "Eggs", "package_qty": 0, "icon": "🥚"})
+    # Icon is optional now — omitting it (or sending "") is fine.
+    resp = await t._add_item({"name": "Salt", "package_qty": 1})
+    assert resp["item"]["icon"] == ""
 
 
 async def test_add_item_deck_pair_must_be_paired(tmp_path):

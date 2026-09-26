@@ -348,7 +348,10 @@ class Tracker(Generic):
             raise ValueError("payload must be an object")
         name = _require_non_empty_string("name", payload.get("name"))
         package_qty = _require_positive_int("package_qty", payload.get("package_qty"))
-        icon = _require_non_empty_string("icon", payload.get("icon"))
+        raw_icon = payload.get("icon")
+        icon = (
+            _require_non_empty_string("icon", raw_icon) if raw_icon not in (None, "") else ""
+        )
         deck_page, deck_slot = _validate_deck_pair(
             payload.get("deck_page"), payload.get("deck_slot"), self._deck_key_count
         )
@@ -409,7 +412,12 @@ class Tracker(Generic):
                     "package_qty", payload["package_qty"]
                 )
             if "icon" in payload:
-                item["icon"] = _require_non_empty_string("icon", payload["icon"])
+                raw_icon = payload["icon"]
+                item["icon"] = (
+                    _require_non_empty_string("icon", raw_icon)
+                    if raw_icon not in (None, "")
+                    else ""
+                )
             if "barcode" in payload:
                 item["barcode"] = _validate_barcode(payload["barcode"])
             if "image" in payload:
