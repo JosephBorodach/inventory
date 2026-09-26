@@ -536,27 +536,18 @@ class Tracker(Generic):
         except Exception as e:
             LOGGER.warning("state snapshot push failed: %s", e)
 
-    def _deck_key_config(self, item: dict, text_override: str | None = None) -> dict:
-        base = {
+    def _deck_key_config(self, item: dict) -> dict:
+        # Text is "<name> <count>" — the streamdeck module wraps on spaces,
+        # so the count naturally falls onto its own line below the name.
+        # Font is intentionally the module default (ASCII-safe); emoji fonts
+        # can't render supra-BMP glyphs and product photos look muddy at
+        # 72×72, so we lean on the always-visible name + count instead.
+        return {
+            "text": f"{item.get('name', '')} {int(item.get('quantity', 0))}",
             "component": self.name,
             "method": "do_command",
             "args": [{"command": "press", "id": item["id"]}],
         }
-        # Rendering priority: explicit item.image (real product photo the
-        # user uploaded), then emoji-codepoint Twemoji PNG (supra-BMP emoji
-        # can't render as text), then plain text (BMP characters only).
-        image_name = item.get("image") or _emoji_to_image_name(item.get("icon", ""))
-        if text_override is not None:
-            base["text"] = text_override
-            base["text_font"] = DECK_TEXT_FONT
-            if image_name:
-                base["image"] = image_name
-        elif image_name:
-            base["image"] = image_name
-        else:
-            base["text"] = item["icon"]
-            base["text_font"] = DECK_TEXT_FONT
-        return base
 
     def _slotted_items_on_page(self, page: int = 0) -> dict[int, dict]:
         out: dict[int, dict] = {}
@@ -597,42 +588,6 @@ class Tracker(Generic):
         except Exception as e:
             LOGGER.warning("deck layout push failed: %s", e)
 
-    async def _flash_slot_count(self, slot: int, count: int, revert_item: dict) -> None:
-        if self._streamdeck is None:
-            return
-        try:
-            await self._streamdeck.do_command(
-                {"update_display": {"keys": {str(slot): {"text": str(count)}}}}
-            )
-        except Exception as e:
-            LOGGER.warning("deck flash push failed: %s", e)
-            return
-        existing = self._revert_tasks.pop(slot, None)
-        if existing is not None and not existing.done():
-            existing.cancel()
-        with contextlib.suppress(RuntimeError):
-            self._revert_tasks[slot] = asyncio.create_task(
-                self._revert_slot_after_delay(slot, revert_item)
-            )
-
-    async def _revert_slot_after_delay(self, slot: int, item: dict) -> None:
-        try:
-            await asyncio.sleep(self._revert_delay_sec)
-        except asyncio.CancelledError:
-            return
-        if self._streamdeck is None:
-            return
-        # Re-read the current item so the revert reflects any edits during the flash.
-        current = self._find_item(item["id"]) or item
-        if current.get("deck_slot") != slot or current.get("deck_page") != 0:
-            return
-        try:
-            await self._streamdeck.do_command(
-                {"update_display": {"keys": {str(slot): {"text": current.get("icon", "")}}}}
-            )
-        except Exception as e:
-            LOGGER.warning("deck revert push failed: %s", e)
-
     async def _press(self, payload: Any) -> dict:
         if not isinstance(payload, dict) or not payload.get("id"):
             raise ValueError("`id` is required")
@@ -649,9 +604,9 @@ class Tracker(Generic):
             self._save_state()
         await self._push_state_snapshot()
         await self._push_change_event("item_decremented", snapshot, actual_delta, new_qty)
-        slot = snapshot.get("deck_slot")
-        if slot is not None and snapshot.get("deck_page") == 0:
-            await self._flash_slot_count(slot, new_qty, snapshot)
+        # Count is always rendered on the key, so a fresh full-layout push is
+        # enough — no flash+revert dance needed anymore.
+        await self._push_full_deck_layout()
         return {"ok": True, "item": snapshot}
 
     async def _push_change_event(

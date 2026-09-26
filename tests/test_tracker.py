@@ -367,9 +367,10 @@ async def test_streamdeck_receives_layout_push_on_add(tmp_path):
     updates = [c for c in deck.commands if "update_display" in c]
     assert updates, "expected an update_display call"
     latest_keys = updates[-1]["update_display"]["keys"]
-    # 🥚 is U+1F95A — supra-BMP, so it gets rendered as an image, not text.
-    assert latest_keys["3"]["image"] == "1f95a.png"
-    assert "text" not in latest_keys["3"]
+    # Text is "<name> <count>" — the streamdeck module wraps on spaces so
+    # the count naturally falls onto its own line below the name.
+    assert latest_keys["3"]["text"] == "Eggs 0"
+    assert "image" not in latest_keys["3"]
     assert latest_keys["3"]["method"] == "do_command"
     assert latest_keys["3"]["component"] == "inventory"
     assert latest_keys["3"]["args"][0] == {"command": "press", "id": mock_item_id(t)}
@@ -385,8 +386,8 @@ async def test_streamdeck_layout_uses_configured_key_count(tmp_path):
     assert set(keys.keys()) == {"0", "1", "2", "3", "4", "5"}
 
 
-async def test_press_decrements_and_flashes_and_reverts(tmp_path):
-    t, _, _, deck = _make(tmp_path, with_streamdeck=True, revert_delay_sec=0.05)
+async def test_press_decrements_and_updates_deck(tmp_path):
+    t, _, _, deck = _make(tmp_path, with_streamdeck=True)
     item = await _add_egg(t, deck_page=0, deck_slot=3, name="Eggs", package_qty=12)
     await t._set_quantity({"id": item["id"], "quantity": 24})
     deck.commands.clear()
@@ -394,26 +395,10 @@ async def test_press_decrements_and_flashes_and_reverts(tmp_path):
     resp = await t._press({"id": item["id"]})
     assert resp["item"]["quantity"] == 23
 
-    flash = next(
-        (
-            c for c in deck.commands
-            if c.get("update_display", {}).get("keys", {}).get("3", {}).get("text") == "23"
-        ),
-        None,
-    )
-    assert flash is not None, "expected flash update with new count"
-
-    await asyncio.sleep(0.15)
-
-    revert = next(
-        (
-            c
-            for c in deck.commands
-            if c.get("update_display", {}).get("keys", {}).get("3", {}).get("text") == "🥚"
-        ),
-        None,
-    )
-    assert revert is not None, "expected revert to icon"
+    updates = [c for c in deck.commands if "update_display" in c]
+    assert updates, "expected a deck update after press"
+    latest_keys = updates[-1]["update_display"]["keys"]
+    assert latest_keys["3"]["text"] == "Eggs 23"
 
 
 async def test_press_floors_at_zero(tmp_path):
