@@ -717,8 +717,15 @@ class Tracker(Generic):
     async def _focus_step(self, payload: Any) -> dict:
         if not isinstance(payload, dict):
             raise ValueError("payload must be an object")
-        delta = payload.get("delta", 0)
-        if isinstance(delta, bool) or not isinstance(delta, int) or delta == 0:
+        delta_raw = payload.get("delta", 0)
+        # Deltas coming back from the streamdeck have round-tripped through
+        # Go/structpb and arrive as float64. Accept whole-number floats.
+        if isinstance(delta_raw, bool) or not isinstance(delta_raw, int | float):
+            raise ValueError("`delta` must be a non-zero integer")
+        if isinstance(delta_raw, float) and not delta_raw.is_integer():
+            raise ValueError("`delta` must be a non-zero integer")
+        delta = int(delta_raw)
+        if delta == 0:
             raise ValueError("`delta` must be a non-zero integer")
         if self._focus_item_id is None:
             # Stale key press — treat as no-op rather than an error so the

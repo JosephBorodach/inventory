@@ -456,6 +456,19 @@ async def test_focus_step_no_op_outside_focus(tmp_path):
     assert t._find_item(item["id"])["quantity"] == 10
 
 
+async def test_focus_step_accepts_float_delta_from_streamdeck(tmp_path):
+    # Deltas round-tripped through the streamdeck's gRPC path come back as
+    # float64. -1.0 and 1.0 must be accepted or the −/+ keys silently no-op.
+    t, _, _, _ = _make(tmp_path, with_streamdeck=True)
+    item = await _add_egg(t, deck_page=0, deck_slot=3, name="Eggs", package_qty=12)
+    await t._set_quantity({"id": item["id"], "quantity": 5})
+    await t._press({"id": item["id"]})
+    resp = await t._focus_step({"delta": -1.0})
+    assert resp["item"]["quantity"] == 4
+    resp = await t._focus_step({"delta": 1.0})
+    assert resp["item"]["quantity"] == 5
+
+
 async def test_focus_step_rejects_zero_or_bool_delta(tmp_path):
     t, _, _, _ = _make(tmp_path, with_streamdeck=True)
     item = await _add_egg(t, deck_page=0, deck_slot=3)
