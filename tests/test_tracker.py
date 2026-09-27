@@ -568,8 +568,10 @@ async def test_reserved_slots_render_when_deps_configured(tmp_path):
     assert keys["12"]["args"][0] == {"command": "water_manual"}
     assert keys["13"]["text"] == "Feed"
     assert keys["13"]["args"][0] == {"command": "feed_now"}
-    assert keys["14"]["text"] == "Thermostat ON"
-    assert keys["14"]["color"] == "green"
+    # Label shows the ACTION (press to turn it OFF), because thermostat is
+    # currently on (thermostat_position=1 in the fixture).
+    assert keys["14"]["text"] == "Thermostat OFF"
+    assert keys["14"]["color"] == ""
     assert keys["14"]["args"][0] == {"command": "thermostat_toggle"}
 
 
@@ -592,12 +594,13 @@ async def test_reserved_slot_map_partial(tmp_path):
     assert keys["14"]["text"] == " "
 
 
-async def test_thermostat_off_label_and_color(tmp_path):
+async def test_thermostat_off_shows_turn_on_action(tmp_path):
+    # Current state = off → label shows the action (press to turn ON), green.
     t, deck = _with_reserved(tmp_path, waterer=False, feeder=False, thermostat_position=0)
     await t._push_full_deck_layout()
     keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
-    assert keys["14"]["text"] == "Thermostat OFF"
-    assert keys["14"]["color"] == ""
+    assert keys["14"]["text"] == "Thermostat ON"
+    assert keys["14"]["color"] == "green"
 
 
 async def test_water_manual_calls_waterer_with_configured_ml(tmp_path):
@@ -617,9 +620,10 @@ async def test_thermostat_toggle_flips_position(tmp_path):
     resp = await t._thermostat_toggle({})
     assert resp["position"] == 1
     assert t._thermostat_switch.set_calls == [1]
-    # Layout re-push shows the new label immediately.
+    # Layout re-push shows the new label immediately — now that it's on,
+    # the action label flips to "press to turn OFF".
     keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
-    assert keys["14"]["text"] == "Thermostat ON"
+    assert keys["14"]["text"] == "Thermostat OFF"
 
 
 async def test_reserved_slot_rejects_item_assignment(tmp_path):

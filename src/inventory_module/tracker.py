@@ -786,11 +786,16 @@ class Tracker(Generic):
         }
 
     def _thermostat_key_config(self) -> dict:
+        # Label + color show the ACTION (what pressing will do), not the
+        # current state. If it's currently on, the button says "Thermostat
+        # OFF" (dark) — press to turn it off. If off, says "Thermostat ON"
+        # (green) — press to turn it on.
         on = bool(self._thermostat_on)
+        target_on = not on
         return {
-            "text": "Thermostat ON" if on else "Thermostat OFF",
-            "color": "green" if on else "",
-            "text_color": "white" if on else "",
+            "text": "Thermostat ON" if target_on else "Thermostat OFF",
+            "color": "green" if target_on else "",
+            "text_color": "white" if target_on else "",
             "component": self.name,
             "method": "do_command",
             "args": [{"command": "thermostat_toggle"}],
