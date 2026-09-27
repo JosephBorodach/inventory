@@ -109,9 +109,13 @@ before the first mutation.
   the deck. Used by the web app's drag-to-reorder UI; safer than sequential
   `edit_item` calls because it can swap slots without hitting the "already
   assigned" collision check mid-move.
-- `press({id})` — Stream Deck callback. Decrement by 1, flash the new count on
-  the paired deck key for a few seconds, then revert to the item icon. Per-slot
-  cancellable so mashing a key doesn't stack revert timers.
+- `press({id})` — Stream Deck item-key callback. Toggles focus mode: first
+  press hides every other item and shows `−` / `<name> <count>` / `+` on
+  slots 6/7/8; pressing the item key again returns to the full grid.
+- `focus_step({delta})` — Stream Deck `−` / `+` callback. Adjusts the
+  focused item's count by `delta` (must be non-zero) and resets the focus
+  auto-return timer. No-op when not in focus mode. After 60s of no
+  `focus_step` activity the deck auto-returns to the full grid.
 
 ## Stream Deck integration
 

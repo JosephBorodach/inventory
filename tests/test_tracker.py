@@ -385,26 +385,114 @@ async def test_streamdeck_layout_uses_configured_key_count(tmp_path):
     assert set(keys.keys()) == {"0", "1", "2", "3", "4", "5"}
 
 
-async def test_press_decrements_and_updates_deck(tmp_path):
+async def test_press_enters_focus_mode(tmp_path):
     t, _, _, deck = _make(tmp_path, with_streamdeck=True)
     item = await _add_egg(t, deck_page=0, deck_slot=3, name="Eggs", package_qty=12)
     await t._set_quantity({"id": item["id"], "quantity": 24})
     deck.commands.clear()
 
     resp = await t._press({"id": item["id"]})
-    assert resp["item"]["quantity"] == 23
+    assert resp["focus_item_id"] == item["id"]
 
-    updates = [c for c in deck.commands if "update_display" in c]
-    assert updates, "expected a deck update after press"
-    latest_keys = updates[-1]["update_display"]["keys"]
-    assert latest_keys["3"]["text"] == "Eggs 23"
+    keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
+    # Item shown at slot 7 with −/+ at 6/8; every other slot blank.
+    assert keys["7"]["text"] == "Eggs 24"
+    assert keys["6"]["text"] == "−"
+    assert keys["6"]["args"][0] == {"command": "focus_step", "delta": -1}
+    assert keys["8"]["text"] == "+"
+    assert keys["8"]["args"][0] == {"command": "focus_step", "delta": 1}
+    for other in ("0", "1", "2", "3", "4", "5", "9", "10", "11", "12", "13", "14"):
+        assert keys[other]["text"] == " ", f"slot {other} should be blank"
 
 
-async def test_press_floors_at_zero(tmp_path):
-    t, _, _, _ = _make(tmp_path, with_streamdeck=True, revert_delay_sec=0.01)
-    item = await _add_egg(t, deck_page=0, deck_slot=1)
+async def test_press_twice_exits_focus(tmp_path):
+    t, _, _, deck = _make(tmp_path, with_streamdeck=True)
+    item = await _add_egg(t, deck_page=0, deck_slot=3, name="Eggs", package_qty=12)
+    await t._press({"id": item["id"]})
+    deck.commands.clear()
+
     resp = await t._press({"id": item["id"]})
-    assert resp["item"]["quantity"] == 0
+    assert resp["focus_item_id"] is None
+
+    keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
+    # Item back at slot 3, everything else blank (only one item on the deck).
+    assert keys["3"]["text"] == "Eggs 0"
+
+
+async def test_focus_step_increments_focused_item(tmp_path):
+    t, _, _, deck = _make(tmp_path, with_streamdeck=True)
+    item = await _add_egg(t, deck_page=0, deck_slot=3, name="Eggs", package_qty=12)
+    await t._press({"id": item["id"]})
+    deck.commands.clear()
+
+    resp = await t._focus_step({"delta": 1})
+    assert resp["item"]["quantity"] == 1
+
+    keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
+    assert keys["7"]["text"] == "Eggs 1"
+
+
+async def test_focus_step_decrements_focused_item(tmp_path):
+    t, _, _, _ = _make(tmp_path, with_streamdeck=True)
+    item = await _add_egg(t, deck_page=0, deck_slot=3, name="Eggs", package_qty=12)
+    await t._set_quantity({"id": item["id"], "quantity": 5})
+    await t._press({"id": item["id"]})
+    resp = await t._focus_step({"delta": -1})
+    assert resp["item"]["quantity"] == 4
+
+
+async def test_focus_step_no_op_outside_focus(tmp_path):
+    t, _, _, _ = _make(tmp_path, with_streamdeck=True)
+    item = await _add_egg(t, deck_page=0, deck_slot=3, name="Eggs", package_qty=12)
+    await t._set_quantity({"id": item["id"], "quantity": 10})
+    resp = await t._focus_step({"delta": 1})
+    assert resp == {"ok": True, "note": "not in focus mode"}
+    assert t._find_item(item["id"])["quantity"] == 10
+
+
+async def test_focus_step_rejects_zero_or_bool_delta(tmp_path):
+    t, _, _, _ = _make(tmp_path, with_streamdeck=True)
+    item = await _add_egg(t, deck_page=0, deck_slot=3)
+    await t._press({"id": item["id"]})
+    with pytest.raises(ValueError):
+        await t._focus_step({"delta": 0})
+    with pytest.raises(ValueError):
+        await t._focus_step({"delta": True})
+
+
+async def test_focus_auto_returns_after_timeout(tmp_path):
+    t, _, _, deck = _make(tmp_path, with_streamdeck=True)
+    t._focus_timeout_sec = 0.05
+    item = await _add_egg(t, deck_page=0, deck_slot=3, name="Eggs", package_qty=12)
+    await t._press({"id": item["id"]})
+    # Wait for the auto-return to fire.
+    await asyncio.sleep(0.15)
+    assert t._focus_item_id is None
+    keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
+    assert keys["3"]["text"] == "Eggs 0"
+
+
+async def test_focus_step_resets_timeout(tmp_path):
+    t, _, _, _ = _make(tmp_path, with_streamdeck=True)
+    t._focus_timeout_sec = 0.15
+    item = await _add_egg(t, deck_page=0, deck_slot=3, name="Eggs", package_qty=12)
+    await t._press({"id": item["id"]})
+    # Repeatedly step before timeout — focus should persist.
+    for _ in range(3):
+        await asyncio.sleep(0.05)
+        await t._focus_step({"delta": 1})
+    assert t._focus_item_id == item["id"]
+
+
+async def test_focus_drops_when_focused_item_deleted(tmp_path):
+    t, _, _, _ = _make(tmp_path, with_streamdeck=True)
+    item = await _add_egg(t, deck_page=0, deck_slot=3)
+    await t._press({"id": item["id"]})
+    assert t._focus_item_id == item["id"]
+    await t._delete_item({"id": item["id"]})
+    # Next deck push notices the item is gone and clears focus.
+    await t._push_full_deck_layout()
+    assert t._focus_item_id is None
 
 
 async def test_no_streamdeck_no_deck_calls(tmp_path):

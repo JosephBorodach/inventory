@@ -27,6 +27,10 @@ DEFAULT_STATE_PATH = "~/.viam/inventory.json"
 DEFAULT_DECK_KEY_COUNT = 15
 DEFAULT_REVERT_DELAY_SEC = 3.0
 DEFAULT_DECK_REFRESH_SEC = 30
+DEFAULT_FOCUS_TIMEOUT_SEC = 60.0
+FOCUS_MINUS_SLOT = 6
+FOCUS_ITEM_SLOT = 7
+FOCUS_PLUS_SLOT = 8
 DECK_TEXT_FONT = "NotoEmoji-Regular.ttf"
 SCHEMA_VERSION = 1
 
@@ -203,6 +207,9 @@ class Tracker(Generic):
         self._boot_task: asyncio.Task | None = None
         self._deck_refresh_task: asyncio.Task | None = None
         self._deck_refresh_sec: float = DEFAULT_DECK_REFRESH_SEC
+        self._focus_item_id: str | None = None
+        self._focus_timeout_sec: float = DEFAULT_FOCUS_TIMEOUT_SEC
+        self._focus_timer_task: asyncio.Task | None = None
 
     @classmethod
     def new(
@@ -294,6 +301,9 @@ class Tracker(Generic):
         for task in self._revert_tasks.values():
             task.cancel()
         self._revert_tasks = {}
+
+        self._focus_item_id = None
+        self._cancel_focus_timer()
 
         if self._boot_task and not self._boot_task.done():
             self._boot_task.cancel()
@@ -610,9 +620,33 @@ class Tracker(Generic):
             "args": [{"command": "status"}],
         }
 
-    async def _push_full_deck_layout(self) -> None:
-        if self._streamdeck is None:
-            return
+    def _focus_control_key(self, text: str, delta: int) -> dict:
+        return {
+            "text": text,
+            "component": self.name,
+            "method": "do_command",
+            "args": [{"command": "focus_step", "delta": delta}],
+        }
+
+    def _focus_deck_keys(self, item: dict) -> dict[str, dict]:
+        # Focus mode: only the item, minus, and plus are visible on the deck.
+        # Item keeps its threshold color so the user can see stock state
+        # while adjusting. Slots 6/7/8 are the middle-row center on a
+        # standard 15-key deck; on smaller decks we clamp so it still fits.
+        item_slot = min(FOCUS_ITEM_SLOT, self._deck_key_count - 1)
+        minus_slot = max(0, item_slot - 1)
+        plus_slot = min(self._deck_key_count - 1, item_slot + 1)
+        keys: dict[str, dict] = {}
+        for slot in range(self._deck_key_count):
+            keys[str(slot)] = self._empty_slot_config()
+        if minus_slot != item_slot:
+            keys[str(minus_slot)] = self._focus_control_key("−", -1)
+        if plus_slot != item_slot:
+            keys[str(plus_slot)] = self._focus_control_key("+", 1)
+        keys[str(item_slot)] = self._deck_key_config(item)
+        return keys
+
+    def _main_deck_keys(self) -> dict[str, dict]:
         slotted = self._slotted_items_on_page(0)
         keys: dict[str, dict] = {}
         for slot in range(self._deck_key_count):
@@ -621,10 +655,63 @@ class Tracker(Generic):
                 keys[str(slot)] = self._deck_key_config(item)
             else:
                 keys[str(slot)] = self._empty_slot_config()
+        return keys
+
+    async def _push_full_deck_layout(self) -> None:
+        if self._streamdeck is None:
+            return
+        focused = (
+            self._find_item(self._focus_item_id)
+            if self._focus_item_id is not None
+            else None
+        )
+        if focused is None and self._focus_item_id is not None:
+            # Focused item was deleted or moved — drop focus quietly.
+            self._focus_item_id = None
+            self._cancel_focus_timer()
+        keys = self._focus_deck_keys(focused) if focused is not None else self._main_deck_keys()
         try:
             await self._streamdeck.do_command({"update_display": {"keys": keys}})
         except Exception as e:
             LOGGER.warning("deck layout push failed: %s", e)
+
+    def _cancel_focus_timer(self) -> None:
+        if self._focus_timer_task and not self._focus_timer_task.done():
+            self._focus_timer_task.cancel()
+        self._focus_timer_task = None
+
+    def _arm_focus_timer(self) -> None:
+        self._cancel_focus_timer()
+        with contextlib.suppress(RuntimeError):
+            self._focus_timer_task = asyncio.create_task(self._focus_timeout_loop())
+
+    async def _focus_timeout_loop(self) -> None:
+        try:
+            await asyncio.sleep(self._focus_timeout_sec)
+        except asyncio.CancelledError:
+            return
+        self._focus_item_id = None
+        await self._push_full_deck_layout()
+
+    async def _focus_step(self, payload: Any) -> dict:
+        if not isinstance(payload, dict):
+            raise ValueError("payload must be an object")
+        delta = payload.get("delta", 0)
+        if isinstance(delta, bool) or not isinstance(delta, int) or delta == 0:
+            raise ValueError("`delta` must be a non-zero integer")
+        if self._focus_item_id is None:
+            # Stale key press — treat as no-op rather than an error so the
+            # deck's built-in error surface doesn't flash.
+            return {"ok": True, "note": "not in focus mode"}
+        item_id = self._focus_item_id
+        direction = 1 if delta > 0 else -1
+        event_type = "item_incremented" if delta > 0 else "item_decremented"
+        by = abs(delta)
+        result = await self._adjust_quantity(
+            {"id": item_id, "by": by}, direction=direction, event_type=event_type
+        )
+        self._arm_focus_timer()
+        return result
 
     async def _reorder_deck(self, payload: Any) -> dict:
         # Atomic slot reassignment. Given an ordered list of item IDs, assign
@@ -672,25 +759,22 @@ class Tracker(Generic):
         return {"ok": True}
 
     async def _press(self, payload: Any) -> dict:
+        # Item key on the deck. Toggles focus mode: first press zooms in on
+        # the item with −/+ controls; pressing the item again exits back to
+        # the full grid. −/+ within focus mode go through `focus_step` and
+        # reset the auto-return timer.
         if not isinstance(payload, dict) or not payload.get("id"):
             raise ValueError("`id` is required")
         item_id = str(payload["id"])
-        assert self._state_lock is not None
-        async with self._state_lock:
-            item = self._require_item(item_id)
-            before = int(item.get("quantity", 0))
-            new_qty = max(0, before - 1)
-            actual_delta = new_qty - before
-            item["quantity"] = new_qty
-            item["updated_at"] = _now_iso()
-            snapshot = dict(item)
-            self._save_state()
-        await self._push_state_snapshot()
-        await self._push_change_event("item_decremented", snapshot, actual_delta, new_qty)
-        # Count is always rendered on the key, so a fresh full-layout push is
-        # enough — no flash+revert dance needed anymore.
+        self._require_item(item_id)
+        if self._focus_item_id == item_id:
+            self._focus_item_id = None
+            self._cancel_focus_timer()
+        else:
+            self._focus_item_id = item_id
+            self._arm_focus_timer()
         await self._push_full_deck_layout()
-        return {"ok": True, "item": snapshot}
+        return {"ok": True, "focus_item_id": self._focus_item_id}
 
     async def _push_change_event(
         self, event_type: str, item: dict, delta: int, new_quantity: int
@@ -799,6 +883,8 @@ class Tracker(Generic):
             return await self._reorder_deck(command)
         if verb == "press":
             return await self._press(command)
+        if verb == "focus_step":
+            return await self._focus_step(command)
         if verb == "lookup_barcode":
             return await self._lookup_barcode(command)
         if verb == "scan_barcode":
