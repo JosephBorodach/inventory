@@ -320,13 +320,15 @@ class Tracker(Generic):
             elif (
                 self._waterer_name
                 and name.name == self._waterer_name
-                and isinstance(resource, GenericService)
+                # Waterer/feeder can be either a Generic *component* or a
+                # Generic *service* — most existing modules ship as components.
+                and isinstance(resource, Generic | GenericService)
             ):
                 self._waterer = resource
             elif (
                 self._feeder_name
                 and name.name == self._feeder_name
-                and isinstance(resource, GenericService)
+                and isinstance(resource, Generic | GenericService)
             ):
                 self._feeder = resource
             elif (
@@ -346,6 +348,24 @@ class Tracker(Generic):
             LOGGER.warning(
                 "streamdeck %r not found among dependencies; deck fanout disabled",
                 self._streamdeck_name,
+            )
+        if self._waterer_name and self._waterer is None:
+            LOGGER.warning(
+                "waterer %r not resolved (need Generic component or service); "
+                "reserved water key disabled",
+                self._waterer_name,
+            )
+        if self._feeder_name and self._feeder is None:
+            LOGGER.warning(
+                "feeder %r not resolved (need Generic component or service); "
+                "reserved feed key disabled",
+                self._feeder_name,
+            )
+        if self._thermostat_switch_name and self._thermostat_switch is None:
+            LOGGER.warning(
+                "thermostat_switch %r not resolved (need Switch component); "
+                "reserved thermostat key disabled",
+                self._thermostat_switch_name,
             )
 
         self._state = self._load_state()
