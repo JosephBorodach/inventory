@@ -395,14 +395,20 @@ async def test_press_enters_focus_mode(tmp_path):
     assert resp["focus_item_id"] == item["id"]
 
     keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
-    # Item shown at slot 7 with −/+ at 6/8; every other slot blank.
+    # Item shown at slot 7 with -/+ at 6/8; every other slot blank.
     assert keys["7"]["text"] == "Eggs 24"
-    assert keys["6"]["text"] == "−"
+    assert keys["7"]["color"] == ""  # blank bg on the item cell
+    assert keys["6"]["text"] == "-"
+    assert keys["6"]["color"] == "red"
     assert keys["6"]["args"][0] == {"command": "focus_step", "delta": -1}
     assert keys["8"]["text"] == "+"
+    assert keys["8"]["color"] == "green"
     assert keys["8"]["args"][0] == {"command": "focus_step", "delta": 1}
     for other in ("0", "1", "2", "3", "4", "5", "9", "10", "11", "12", "13", "14"):
         assert keys[other]["text"] == " ", f"slot {other} should be blank"
+        # Blank slots explicitly reset color so residual green/red doesn't
+        # linger from the previous main-view render.
+        assert keys[other]["color"] == "", f"slot {other} should clear color"
 
 
 async def test_press_twice_exits_focus(tmp_path):

@@ -613,26 +613,47 @@ class Tracker(Generic):
         # module's key validation, and non-empty text (or an image) so the
         # module doesn't reject with "nothing to display for key". Single
         # space renders visually blank while satisfying both checks.
+        # Explicitly send empty color/text_color: the streamdeck module
+        # MERGES key updates rather than replacing, so without these the
+        # previous key's color (e.g. green from a threshold) would persist.
         return {
             "text": " ",
+            "color": "",
+            "text_color": "",
             "component": self.name,
             "method": "do_command",
             "args": [{"command": "status"}],
         }
 
-    def _focus_control_key(self, text: str, delta: int) -> dict:
+    def _focus_control_key(self, text: str, delta: int, color: str) -> dict:
         return {
             "text": text,
+            "color": color,
+            "text_color": "white",
             "component": self.name,
             "method": "do_command",
             "args": [{"command": "focus_step", "delta": delta}],
         }
 
+    def _focus_item_key(self, item: dict) -> dict:
+        # Item cell in focus mode: blank background (no threshold color) so
+        # the red/green of the −/+ buttons reads clearly on either side.
+        return {
+            "text": f"{item.get('name', '')} {int(item.get('quantity', 0))}",
+            "color": "",
+            "text_color": "",
+            "component": self.name,
+            "method": "do_command",
+            "args": [{"command": "press", "id": item["id"]}],
+        }
+
     def _focus_deck_keys(self, item: dict) -> dict[str, dict]:
         # Focus mode: only the item, minus, and plus are visible on the deck.
-        # Item keeps its threshold color so the user can see stock state
-        # while adjusting. Slots 6/7/8 are the middle-row center on a
-        # standard 15-key deck; on smaller decks we clamp so it still fits.
+        # Minus is red, plus is green; item background is blank so the
+        # controls read clearly. Slots 6/7/8 are the middle-row center on
+        # a standard 15-key deck; on smaller decks we clamp so it still fits.
+        # Text is plain ASCII "-" and "+" — the U+2212 minus glyph doesn't
+        # render in the module's default font.
         item_slot = min(FOCUS_ITEM_SLOT, self._deck_key_count - 1)
         minus_slot = max(0, item_slot - 1)
         plus_slot = min(self._deck_key_count - 1, item_slot + 1)
@@ -640,10 +661,10 @@ class Tracker(Generic):
         for slot in range(self._deck_key_count):
             keys[str(slot)] = self._empty_slot_config()
         if minus_slot != item_slot:
-            keys[str(minus_slot)] = self._focus_control_key("−", -1)
+            keys[str(minus_slot)] = self._focus_control_key("-", -1, "red")
         if plus_slot != item_slot:
-            keys[str(plus_slot)] = self._focus_control_key("+", 1)
-        keys[str(item_slot)] = self._deck_key_config(item)
+            keys[str(plus_slot)] = self._focus_control_key("+", 1, "green")
+        keys[str(item_slot)] = self._focus_item_key(item)
         return keys
 
     def _main_deck_keys(self) -> dict[str, dict]:
