@@ -37,6 +37,10 @@ batteries — but the mechanics don't care what you're counting.
 | `streamdeck`     | string | no       | Optional `erh:viam-streamdeck:streamdeck-any` service name for deck fanout.      |
 | `deck_key_count` | int    | no       | Number of physical keys on the deck. Defaults to `15` (standard Stream Deck).    |
 | `state_path`     | string | no       | Override the JSON store path. Defaults to `~/.viam/inventory.json`.              |
+| `waterer`        | string | no       | Optional waterer generic service. Adds a "Water" key at slot `N-3`.              |
+| `feeder`         | string | no       | Optional feeder generic service. Adds a "Feed" key at slot `N-2`.                |
+| `thermostat_switch` | string | no    | Optional switch component. Adds a "Thermostat ON/OFF" toggle at slot `N-1`.      |
+| `manual_water_ml` | int   | no       | Amount to dispense on a manual Water button press. Defaults to `50`.             |
 
 The `state_sensor` should be configured with `queue_capacity: 1` and no data
 capture — its purpose is to hold the latest snapshot in memory for fast reads.
@@ -109,6 +113,13 @@ before the first mutation.
   the deck. Used by the web app's drag-to-reorder UI; safer than sequential
   `edit_item` calls because it can swap slots without hitting the "already
   assigned" collision check mid-move.
+- `water_manual({})` — Reserved-slot callback (also callable directly). Sends
+  `dispense_ml({ml: manual_water_ml})` to the configured `waterer`.
+- `feed_now({})` — Reserved-slot callback. Sends `feed_now` to the configured
+  `feeder`, which uses its own `target_meal_cups`.
+- `thermostat_toggle({})` — Reserved-slot callback. Reads current position of
+  the configured `thermostat_switch` and flips it (0↔1). Re-pushes the deck
+  layout so the label updates immediately.
 - `press({id})` — Stream Deck item-key callback. Toggles focus mode: first
   press hides every other item and shows `−` / `<name> <count>` / `+` on
   slots 6/7/8; pressing the item key again returns to the full grid.

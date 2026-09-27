@@ -16,6 +16,19 @@ class RecordingSensor:
         return {"ok": True}
 
 
+class RecordingSwitch:
+    def __init__(self, position: int = 0):
+        self.position = position
+        self.set_calls: list[int] = []
+
+    async def get_position(self, **kwargs):
+        return self.position
+
+    async def set_position(self, position: int, **kwargs):
+        self.set_calls.append(position)
+        self.position = position
+
+
 def _make(
     tmp_path: Path,
     with_events: bool = False,
@@ -524,6 +537,129 @@ async def test_no_streamdeck_no_deck_calls(tmp_path):
 
 def mock_item_id(tracker: Tracker) -> str:
     return tracker._state["items"][0]["id"]
+
+
+# -- reserved slots: water / feed / thermostat --------------------------
+
+
+def _with_reserved(tmp_path, *, waterer=True, feeder=True, thermostat=True,
+                   thermostat_position: int = 0, manual_water_ml: int = 50):
+    t, _, _, deck = _make(tmp_path, with_streamdeck=True)
+    if waterer:
+        t._waterer = RecordingSensor()
+        t._waterer_name = "waterer"
+    if feeder:
+        t._feeder = RecordingSensor()
+        t._feeder_name = "feeder"
+    if thermostat:
+        t._thermostat_switch = RecordingSwitch(position=thermostat_position)
+        t._thermostat_switch_name = "thermostat"
+    t._manual_water_ml = manual_water_ml
+    return t, deck
+
+
+async def test_reserved_slots_render_when_deps_configured(tmp_path):
+    t, deck = _with_reserved(tmp_path, thermostat_position=1)
+    # Fresh layout push — main mode, no items.
+    await t._push_full_deck_layout()
+    keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
+    # Slots 12/13/14 on a 15-key deck are water/feed/thermostat.
+    assert keys["12"]["text"].startswith("Water")
+    assert keys["12"]["args"][0] == {"command": "water_manual"}
+    assert keys["13"]["text"] == "Feed"
+    assert keys["13"]["args"][0] == {"command": "feed_now"}
+    assert keys["14"]["text"] == "Thermostat ON"
+    assert keys["14"]["color"] == "green"
+    assert keys["14"]["args"][0] == {"command": "thermostat_toggle"}
+
+
+async def test_reserved_slots_absent_when_no_deps(tmp_path):
+    t, _, _, deck = _make(tmp_path, with_streamdeck=True)
+    await t._push_full_deck_layout()
+    keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
+    # No deps configured → those slots are just empty, available for items.
+    for slot in ("12", "13", "14"):
+        assert keys[slot]["text"] == " "
+
+
+async def test_reserved_slot_map_partial(tmp_path):
+    # Only feeder configured → only slot 13 reserved.
+    t, deck = _with_reserved(tmp_path, waterer=False, thermostat=False)
+    await t._push_full_deck_layout()
+    keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
+    assert keys["12"]["text"] == " "
+    assert keys["13"]["text"] == "Feed"
+    assert keys["14"]["text"] == " "
+
+
+async def test_thermostat_off_label_and_color(tmp_path):
+    t, deck = _with_reserved(tmp_path, waterer=False, feeder=False, thermostat_position=0)
+    await t._push_full_deck_layout()
+    keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
+    assert keys["14"]["text"] == "Thermostat OFF"
+    assert keys["14"]["color"] == ""
+
+
+async def test_water_manual_calls_waterer_with_configured_ml(tmp_path):
+    t, _ = _with_reserved(tmp_path, feeder=False, thermostat=False, manual_water_ml=75)
+    await t._water_manual({})
+    assert t._waterer.commands == [{"command": "dispense_ml", "ml": 75}]
+
+
+async def test_feed_now_calls_feeder(tmp_path):
+    t, _ = _with_reserved(tmp_path, waterer=False, thermostat=False)
+    await t._feed_now({})
+    assert t._feeder.commands == [{"command": "feed_now"}]
+
+
+async def test_thermostat_toggle_flips_position(tmp_path):
+    t, deck = _with_reserved(tmp_path, waterer=False, feeder=False, thermostat_position=0)
+    resp = await t._thermostat_toggle({})
+    assert resp["position"] == 1
+    assert t._thermostat_switch.set_calls == [1]
+    # Layout re-push shows the new label immediately.
+    keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
+    assert keys["14"]["text"] == "Thermostat ON"
+
+
+async def test_reserved_slot_rejects_item_assignment(tmp_path):
+    t, _ = _with_reserved(tmp_path)
+    with pytest.raises(ValueError, match="reserved for water"):
+        await _add_egg(t, deck_page=0, deck_slot=12)
+    with pytest.raises(ValueError, match="reserved for feed"):
+        await _add_egg(t, deck_page=0, deck_slot=13)
+    with pytest.raises(ValueError, match="reserved for thermostat"):
+        await _add_egg(t, deck_page=0, deck_slot=14)
+
+
+async def test_reserved_slot_reject_on_edit(tmp_path):
+    t, _ = _with_reserved(tmp_path)
+    item = await _add_egg(t, deck_page=0, deck_slot=3)
+    with pytest.raises(ValueError, match="reserved for water"):
+        await t._edit_item({"id": item["id"], "deck_page": 0, "deck_slot": 12})
+
+
+async def test_reserved_slot_hides_preexisting_item(tmp_path):
+    # An item was assigned to slot 12 BEFORE the waterer dep was added. The
+    # reserved config now wins on render — item's DB record is intact but
+    # the deck shows the water key.
+    t, _ = _with_reserved(tmp_path, feeder=False, thermostat=False)
+    # Bypass validation to plant an item on a would-be reserved slot.
+    t._waterer = None
+    await _add_egg(t, deck_page=0, deck_slot=12, name="Ghost")
+    t._waterer = RecordingSensor()
+    keys = t._main_deck_keys()
+    assert keys["12"]["text"].startswith("Water")
+
+
+async def test_do_command_wires_new_verbs(tmp_path):
+    t, _ = _with_reserved(tmp_path, thermostat_position=0)
+    r = await t.do_command({"command": "water_manual"})
+    assert r["ok"] is True
+    r = await t.do_command({"command": "feed_now"})
+    assert r["ok"] is True
+    r = await t.do_command({"command": "thermostat_toggle"})
+    assert r["position"] == 1
 
 
 # -- reorder_deck ------------------------------------------------------
