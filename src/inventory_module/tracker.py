@@ -713,8 +713,7 @@ class Tracker(Generic):
             self._focus_item_id = None
             self._cancel_focus_timer()
         if focused is None:
-            # Only refresh thermostat state for the main layout — the
-            # focus layout doesn't show reserved keys.
+            # Focus layout doesn't show reserved keys, so skip the refresh.
             await self._dispatcher.refresh_thermostat_state()
         keys = self._focus_deck_keys(focused) if focused is not None else self._main_deck_keys()
         try:
@@ -742,8 +741,7 @@ class Tracker(Generic):
 
     async def _thermostat_toggle_and_repaint(self, payload: Any) -> dict:
         result = await self._dispatcher.thermostat_toggle(payload)
-        # Repaint so the label flips right away instead of waiting for the
-        # next 30s deck refresh cycle.
+        # Repaint now so we don't wait for the 30s refresh cycle.
         await self._push_full_deck_layout()
         return result
 

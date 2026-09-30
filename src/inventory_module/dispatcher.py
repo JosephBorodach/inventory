@@ -1,9 +1,4 @@
-"""Home-action dispatch: reserved streamdeck keys that fire waterer /
-feeder / thermostat commands. Owns the layout of the reserved bottom-
-right slots and the click-through to the underlying components. The
-tracker composes this rather than embedding it — the actions have
-nothing to do with inventory.
-"""
+"""Reserved streamdeck keys that fire waterer / feeder / thermostat commands."""
 
 import logging
 from collections.abc import Mapping
@@ -66,8 +61,7 @@ class HomeActionDispatcher:
             if (
                 self._waterer_name
                 and name.name == self._waterer_name
-                # Waterer/feeder can be either a Generic component or a Generic
-                # service — most existing modules ship as components.
+                # Waterer/feeder can be either a Generic component or a service.
                 and isinstance(resource, Generic | GenericService)
             ):
                 self._waterer = resource
@@ -136,9 +130,7 @@ class HomeActionDispatcher:
         self._thermostat_on = pos == 1
 
     def reserved_slot_map(self, deck_key_count: int) -> dict[int, str]:
-        # Reserved slots count back from the end so they always sit on the
-        # bottom-right of any deck size. Each slot is only reserved when its
-        # dep is actually resolved — otherwise the slot stays available.
+        # Count back from the end so slots always sit on the bottom-right.
         reserved: dict[int, str] = {}
         if self._waterer is not None:
             reserved[deck_key_count - RESERVED_WATER_OFFSET] = "water"
@@ -178,7 +170,7 @@ class HomeActionDispatcher:
         }
 
     def _thermostat_key_config(self) -> dict:
-        # Label shows the ACTION (what pressing does), not the current state.
+        # Label shows the action, not the current state.
         on = bool(self._thermostat_on)
         target_on = not on
         return {
