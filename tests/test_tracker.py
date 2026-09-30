@@ -40,12 +40,12 @@ def _make(
     t._state_sensor_name = "state"
     t._events_sensor = RecordingSensor() if with_events else None
     t._events_sensor_name = "events" if with_events else ""
-    t._streamdeck = RecordingSensor() if with_streamdeck else None
-    t._streamdeck_name = "streamdeck" if with_streamdeck else ""
-    t._deck_key_count = deck_key_count
+    t._deck._streamdeck = RecordingSensor() if with_streamdeck else None
+    t._deck._streamdeck_name = "streamdeck" if with_streamdeck else ""
+    t._deck._deck_key_count = deck_key_count
     t._state_path = str(tmp_path / "inventory.json")
     t._state = {"schema_version": 1, "items": []}
-    return t, t._state_sensor, t._events_sensor, t._streamdeck
+    return t, t._state_sensor, t._events_sensor, t._deck._streamdeck
 
 
 async def _add_egg(t: Tracker, **overrides) -> dict:
@@ -517,37 +517,37 @@ async def test_focus_step_rejects_zero_or_bool_delta(tmp_path):
 
 async def test_focus_auto_returns_after_timeout(tmp_path):
     t, _, _, deck = _make(tmp_path, with_streamdeck=True)
-    t._focus_timeout_sec = 0.05
+    t._deck._focus_timeout_sec = 0.05
     item = await _add_egg(t, deck_page=0, deck_slot=3, name="Eggs", package_qty=12)
     await t._press({"id": item["id"]})
     # Wait for the auto-return to fire.
     await asyncio.sleep(0.15)
-    assert t._focus_item_id is None
+    assert t._deck.focused_item_id is None
     keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
     assert keys["3"]["text"] == "Eggs 0"
 
 
 async def test_focus_step_resets_timeout(tmp_path):
     t, _, _, _ = _make(tmp_path, with_streamdeck=True)
-    t._focus_timeout_sec = 0.15
+    t._deck._focus_timeout_sec = 0.15
     item = await _add_egg(t, deck_page=0, deck_slot=3, name="Eggs", package_qty=12)
     await t._press({"id": item["id"]})
     # Repeatedly step before timeout — focus should persist.
     for _ in range(3):
         await asyncio.sleep(0.05)
         await t._focus_step({"delta": 1})
-    assert t._focus_item_id == item["id"]
+    assert t._deck.focused_item_id == item["id"]
 
 
 async def test_focus_drops_when_focused_item_deleted(tmp_path):
     t, _, _, _ = _make(tmp_path, with_streamdeck=True)
     item = await _add_egg(t, deck_page=0, deck_slot=3)
     await t._press({"id": item["id"]})
-    assert t._focus_item_id == item["id"]
+    assert t._deck.focused_item_id == item["id"]
     await t._delete_item({"id": item["id"]})
     # Next deck push notices the item is gone and clears focus.
-    await t._push_full_deck_layout()
-    assert t._focus_item_id is None
+    await t._deck.push_layout()
+    assert t._deck.focused_item_id is None
 
 
 async def test_no_streamdeck_no_deck_calls(tmp_path):
@@ -592,7 +592,7 @@ def _with_reserved(
 async def test_reserved_slots_render_when_deps_configured(tmp_path):
     t, deck = _with_reserved(tmp_path, thermostat_position=1)
     # Fresh layout push — main mode, no items.
-    await t._push_full_deck_layout()
+    await t._deck.push_layout()
     keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
     # Slots 12/13/14 on a 15-key deck are water/feed/thermostat.
     assert keys["12"]["text"].startswith("Water")
@@ -608,7 +608,7 @@ async def test_reserved_slots_render_when_deps_configured(tmp_path):
 
 async def test_reserved_slots_absent_when_no_deps(tmp_path):
     t, _, _, deck = _make(tmp_path, with_streamdeck=True)
-    await t._push_full_deck_layout()
+    await t._deck.push_layout()
     keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
     # No deps configured → those slots are just empty, available for items.
     for slot in ("12", "13", "14"):
@@ -618,7 +618,7 @@ async def test_reserved_slots_absent_when_no_deps(tmp_path):
 async def test_reserved_slot_map_partial(tmp_path):
     # Only feeder configured → only slot 13 reserved.
     t, deck = _with_reserved(tmp_path, waterer=False, thermostat=False)
-    await t._push_full_deck_layout()
+    await t._deck.push_layout()
     keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
     assert keys["12"]["text"] == " "
     assert keys["13"]["text"] == "Feed"
@@ -628,7 +628,7 @@ async def test_reserved_slot_map_partial(tmp_path):
 async def test_thermostat_off_shows_turn_on_action(tmp_path):
     # Current state = off → label shows the action (press to turn ON), green.
     t, deck = _with_reserved(tmp_path, waterer=False, feeder=False, thermostat_position=0)
-    await t._push_full_deck_layout()
+    await t._deck.push_layout()
     keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
     assert keys["14"]["text"] == "Thermostat ON"
     assert keys["14"]["color"] == "green"
@@ -683,7 +683,7 @@ async def test_reserved_slot_hides_preexisting_item(tmp_path):
     t._dispatcher._waterer = None
     await _add_egg(t, deck_page=0, deck_slot=12, name="Ghost")
     t._dispatcher._waterer = RecordingSensor()
-    keys = t._main_deck_keys()
+    keys = t._deck._main_layout()
     assert keys["12"]["text"].startswith("Water")
 
 

@@ -1,7 +1,6 @@
 """Inventory tracker. See README for design + wiring."""
 
 import asyncio
-import contextlib
 import json
 import logging
 import urllib.error
@@ -18,21 +17,14 @@ from viam.proto.app.robot import ComponentConfig
 from viam.proto.common import ResourceName
 from viam.resource.base import ResourceBase
 from viam.resource.types import Model, ModelFamily
-from viam.services.generic import Generic as GenericService
 from viam.utils import struct_to_dict
 
+from .deck import DeckRenderer
 from .dispatcher import HomeActionDispatcher
 
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_STATE_PATH = "~/.viam/inventory.json"
-DEFAULT_DECK_KEY_COUNT = 15
-DEFAULT_DECK_REFRESH_SEC = 30
-DEFAULT_FOCUS_TIMEOUT_SEC = 60.0
-FOCUS_MINUS_SLOT = 6
-FOCUS_ITEM_SLOT = 7
-FOCUS_PLUS_SLOT = 8
-DECK_TEXT_FONT = "NotoEmoji-Regular.ttf"
 SCHEMA_VERSION = 1
 
 OPENFOODFACTS_URL = "https://world.openfoodfacts.org/api/v0/product/{barcode}.json"
@@ -89,9 +81,7 @@ def _optional_non_neg_int(field: str, value: Any) -> int | None:
     )
 
 
-def _validate_deck_pair(
-    page: Any, slot: Any, deck_key_count: int = DEFAULT_DECK_KEY_COUNT
-) -> tuple[int | None, int | None]:
+def _validate_deck_pair(page: Any, slot: Any, deck_key_count: int) -> tuple[int | None, int | None]:
     p = _optional_non_neg_int("deck_page", page)
     s = _optional_non_neg_int("deck_slot", slot)
     if (p is None) != (s is None):
@@ -121,14 +111,6 @@ def _validate_threshold(value: Any) -> int | None:
         min_value=0,
         err_msg="`threshold` must be a non-negative integer or null",
     )
-
-
-def _threshold_color(item: dict) -> str | None:
-    threshold = item.get("threshold")
-    if threshold is None:
-        return None
-    qty = int(item.get("quantity", 0))
-    return "green" if qty > threshold else "red"
 
 
 def _validate_image(value: Any) -> str | None:
@@ -201,21 +183,16 @@ class Tracker(Generic):
         self._state_sensor_name: str = ""
         self._events_sensor: Sensor | None = None
         self._events_sensor_name: str = ""
-        self._streamdeck: GenericService | None = None
-        self._streamdeck_name: str = ""
-        self._deck_key_count: int = DEFAULT_DECK_KEY_COUNT
         self._state_path: str = ""
         self._state: dict = _fresh_state()
         # Constructed once so it survives reconfigure — recreating a lock
         # while a mutation might be holding it would break serialization.
         self._state_lock: asyncio.Lock = asyncio.Lock()
         self._boot_task: asyncio.Task | None = None
-        self._deck_refresh_task: asyncio.Task | None = None
-        self._deck_refresh_sec: float = DEFAULT_DECK_REFRESH_SEC
-        self._focus_item_id: str | None = None
-        self._focus_timeout_sec: float = DEFAULT_FOCUS_TIMEOUT_SEC
-        self._focus_timer_task: asyncio.Task | None = None
         self._dispatcher = HomeActionDispatcher(self.name)
+        self._deck = DeckRenderer(
+            self.name, lambda: self._state["items"], self._find_item, self._dispatcher
+        )
 
     @classmethod
     def new(
@@ -240,22 +217,7 @@ class Tracker(Generic):
             if not isinstance(events_sensor, str) or not events_sensor:
                 raise ValueError("`events_sensor` must be a non-empty string")
             required.append(events_sensor)
-        streamdeck = attrs.get("streamdeck")
-        if streamdeck is not None:
-            if not isinstance(streamdeck, str) or not streamdeck:
-                raise ValueError("`streamdeck` must be a non-empty string")
-            # Optional so the streamdeck can declare a hard dep on this tracker
-            # (needed for its key callbacks to be able to reach us) without a
-            # circular required-dep loop. Optional deps still trigger our
-            # reconfigure when they become available.
-            optional.append(streamdeck)
-        deck_key_count = attrs.get("deck_key_count")
-        if deck_key_count is not None and (
-            isinstance(deck_key_count, bool)
-            or not isinstance(deck_key_count, int | float)
-            or deck_key_count <= 0
-        ):
-            raise ValueError("`deck_key_count` must be a positive integer")
+        optional.extend(DeckRenderer.validate_config_attrs(attrs))
         optional.extend(HomeActionDispatcher.validate_config_attrs(attrs))
         return required, optional
 
@@ -267,13 +229,10 @@ class Tracker(Generic):
         attrs = struct_to_dict(config.attributes)
         self._state_sensor_name = str(attrs["state_sensor"])
         self._events_sensor_name = str(attrs.get("events_sensor") or "")
-        self._streamdeck_name = str(attrs.get("streamdeck") or "")
-        self._deck_key_count = int(attrs.get("deck_key_count") or DEFAULT_DECK_KEY_COUNT)
         self._state_path = str(attrs.get("state_path") or DEFAULT_STATE_PATH)
 
         self._state_sensor = None
         self._events_sensor = None
-        self._streamdeck = None
         for name, resource in dependencies.items():
             if name.name == self._state_sensor_name and isinstance(resource, Sensor):
                 self._state_sensor = resource
@@ -283,12 +242,6 @@ class Tracker(Generic):
                 and isinstance(resource, Sensor)
             ):
                 self._events_sensor = resource
-            elif (
-                self._streamdeck_name
-                and name.name == self._streamdeck_name
-                and isinstance(resource, GenericService)
-            ):
-                self._streamdeck = resource
         if self._state_sensor is None:
             raise RuntimeError(f"state_sensor {self._state_sensor_name!r} not found")
         if self._events_sensor_name and self._events_sensor is None:
@@ -296,17 +249,10 @@ class Tracker(Generic):
                 "events_sensor %r not found among dependencies; change events will not be pushed",
                 self._events_sensor_name,
             )
-        if self._streamdeck_name and self._streamdeck is None:
-            LOGGER.warning(
-                "streamdeck %r not found among dependencies; deck fanout disabled",
-                self._streamdeck_name,
-            )
         self._dispatcher.reconfigure(attrs, dependencies)
+        self._deck.reconfigure(attrs, dependencies)
 
         self._state = self._load_state()
-
-        self._focus_item_id = None
-        self._cancel_focus_timer()
 
         if self._boot_task and not self._boot_task.done():
             self._boot_task.cancel()
@@ -314,11 +260,6 @@ class Tracker(Generic):
             self._boot_task = asyncio.create_task(self._on_boot())
         except RuntimeError:
             self._boot_task = None
-
-        if self._deck_refresh_task and not self._deck_refresh_task.done():
-            self._deck_refresh_task.cancel()
-        with contextlib.suppress(RuntimeError):
-            self._deck_refresh_task = asyncio.create_task(self._deck_refresh_loop())
 
     # -- Persistence --------------------------------------------------
 
@@ -394,7 +335,7 @@ class Tracker(Generic):
         return None
 
     def _reject_reserved_slot(self, slot: int) -> None:
-        reserved = self._dispatcher.reserved_slot_map(self._deck_key_count)
+        reserved = self._dispatcher.reserved_slot_map(self._deck.key_count)
         if slot in reserved:
             raise ValueError(
                 f"deck slot {slot} is reserved for {reserved[slot]}; pick another slot"
@@ -416,7 +357,7 @@ class Tracker(Generic):
         raw_icon = payload.get("icon")
         icon = _require_non_empty_string("icon", raw_icon) if raw_icon not in (None, "") else ""
         deck_page, deck_slot = _validate_deck_pair(
-            payload.get("deck_page"), payload.get("deck_slot"), self._deck_key_count
+            payload.get("deck_page"), payload.get("deck_slot"), self._deck.key_count
         )
         if deck_slot is not None and self._slot_owner(deck_page, deck_slot) is not None:
             raise ValueError(
@@ -461,7 +402,7 @@ class Tracker(Generic):
             new_deck_page = payload["deck_page"] if "deck_page" in payload else item["deck_page"]
             new_deck_slot = payload["deck_slot"] if "deck_slot" in payload else item["deck_slot"]
             deck_page, deck_slot = _validate_deck_pair(
-                new_deck_page, new_deck_slot, self._deck_key_count
+                new_deck_page, new_deck_slot, self._deck.key_count
             )
             if deck_slot is not None:
                 owner = self._slot_owner(deck_page, deck_slot)
@@ -554,37 +495,21 @@ class Tracker(Generic):
 
     async def _on_boot(self) -> None:
         await self._push_state_snapshot()
-        await self._push_full_deck_layout()
-
-    async def _deck_refresh_loop(self) -> None:
-        # Viam doesn't reliably re-fire our reconfigure when an optional
-        # dep (streamdeck) becomes available after we booted. Refresh the
-        # deck layout on a slow cadence so it self-heals — cheap and
-        # idempotent (each push is just an update_display of the current
-        # snapshot). No-op when the streamdeck dep isn't resolved yet.
-        while True:
-            try:
-                await asyncio.sleep(self._deck_refresh_sec)
-            except asyncio.CancelledError:
-                return
-            if self._streamdeck is None:
-                continue
-            await self._push_full_deck_layout()
+        await self._deck.push_layout()
 
     async def _on_change(
         self, event_type: str, item_snapshot: dict, delta: int, new_quantity: int
     ) -> None:
         await self._push_state_snapshot()
         await self._push_change_event(event_type, item_snapshot, delta, new_quantity)
-        await self._push_full_deck_layout()
+        await self._deck.push_layout()
 
     async def _push_state_snapshot(self) -> None:
         if self._state_sensor is None:
             return
-        # Viam's SensorReading type doesn't allow None; the sensor's
-        # get_readings round-trip coerces null → 0, which would collide
-        # with legitimate 0 values (e.g. deck_slot=0). Strip null-valued
-        # keys so consumers treat "key absent" as null.
+        # SensorReading doesn't allow None; get_readings coerces null → 0,
+        # which would collide with legitimate 0 (e.g. deck_slot=0). Strip
+        # nulls so consumers treat "key absent" as null.
         snapshot = {
             "kind": "inventory_snapshot",
             "source": self.name,
@@ -598,159 +523,16 @@ class Tracker(Generic):
         except Exception as e:
             LOGGER.warning("state snapshot push failed: %s", e)
 
-    def _deck_key_config(self, item: dict) -> dict:
-        # Text is "<name> <count>" — the streamdeck module wraps on spaces,
-        # so the count naturally falls onto its own line below the name.
-        # Font is intentionally the module default (ASCII-safe); emoji fonts
-        # can't render supra-BMP glyphs and product photos look muddy at
-        # 72×72, so we lean on the always-visible name + count instead.
-        cfg: dict[str, Any] = {
-            "text": f"{item.get('name', '')} {int(item.get('quantity', 0))}",
-            "component": self.name,
-            "method": "do_command",
-            "args": [{"command": "press", "id": item["id"]}],
-        }
-        color = _threshold_color(item)
-        if color is not None:
-            cfg["color"] = color
-            cfg["text_color"] = "white"
-        return cfg
-
-    def _slotted_items_on_page(self, page: int = 0) -> dict[int, dict]:
-        out: dict[int, dict] = {}
-        for item in self._state["items"]:
-            slot = item.get("deck_slot")
-            item_page = item.get("deck_page")
-            if slot is None or item_page != page:
-                continue
-            if 0 <= slot < self._deck_key_count:
-                out[slot] = item
-        return out
-
-    def _empty_slot_config(self) -> dict:
-        # Empty slot still needs component + method to pass the streamdeck
-        # module's key validation, and non-empty text (or an image) so the
-        # module doesn't reject with "nothing to display for key". Single
-        # space renders visually blank while satisfying both checks.
-        # Explicitly send empty color/text_color: the streamdeck module
-        # MERGES key updates rather than replacing, so without these the
-        # previous key's color (e.g. green from a threshold) would persist.
-        return {
-            "text": " ",
-            "color": "",
-            "text_color": "",
-            "component": self.name,
-            "method": "do_command",
-            "args": [{"command": "status"}],
-        }
-
-    def _focus_control_key(self, text: str, delta: int, color: str) -> dict:
-        return {
-            "text": text,
-            "color": color,
-            "text_color": "white",
-            "component": self.name,
-            "method": "do_command",
-            "args": [{"command": "focus_step", "delta": delta}],
-        }
-
-    def _focus_item_key(self, item: dict) -> dict:
-        # Item cell in focus mode: blank background (no threshold color) so
-        # the red/green of the −/+ buttons reads clearly on either side.
-        return {
-            "text": f"{item.get('name', '')} {int(item.get('quantity', 0))}",
-            "color": "",
-            "text_color": "",
-            "component": self.name,
-            "method": "do_command",
-            "args": [{"command": "press", "id": item["id"]}],
-        }
-
-    def _focus_deck_keys(self, item: dict) -> dict[str, dict]:
-        # Focus mode: only the item, minus, and plus are visible on the deck.
-        # Minus is red, plus is green; item background is blank so the
-        # controls read clearly. Slots 6/7/8 are the middle-row center on
-        # a standard 15-key deck; on smaller decks we clamp so it still fits.
-        # Text is plain ASCII "-" and "+" — the U+2212 minus glyph doesn't
-        # render in the module's default font.
-        item_slot = min(FOCUS_ITEM_SLOT, self._deck_key_count - 1)
-        minus_slot = max(0, item_slot - 1)
-        plus_slot = min(self._deck_key_count - 1, item_slot + 1)
-        keys: dict[str, dict] = {}
-        for slot in range(self._deck_key_count):
-            keys[str(slot)] = self._empty_slot_config()
-        if minus_slot != item_slot:
-            keys[str(minus_slot)] = self._focus_control_key("-", -1, "red")
-        if plus_slot != item_slot:
-            keys[str(plus_slot)] = self._focus_control_key("+", 1, "green")
-        keys[str(item_slot)] = self._focus_item_key(item)
-        return keys
-
-    def _main_deck_keys(self) -> dict[str, dict]:
-        slotted = self._slotted_items_on_page(0)
-        reserved = self._dispatcher.reserved_slot_map(self._deck_key_count)
-        keys: dict[str, dict] = {}
-        for slot in range(self._deck_key_count):
-            if slot in reserved:
-                keys[str(slot)] = (
-                    self._dispatcher.reserved_slot_config(reserved[slot])
-                    or self._empty_slot_config()
-                )
-                continue
-            item = slotted.get(slot)
-            if item is not None:
-                keys[str(slot)] = self._deck_key_config(item)
-            else:
-                keys[str(slot)] = self._empty_slot_config()
-        return keys
-
-    async def _push_full_deck_layout(self) -> None:
-        if self._streamdeck is None:
-            return
-        focused = self._find_item(self._focus_item_id) if self._focus_item_id is not None else None
-        if focused is None and self._focus_item_id is not None:
-            # Focused item was deleted or moved — drop focus quietly.
-            self._focus_item_id = None
-            self._cancel_focus_timer()
-        if focused is None:
-            # Focus layout doesn't show reserved keys, so skip the refresh.
-            await self._dispatcher.refresh_thermostat_state()
-        keys = self._focus_deck_keys(focused) if focused is not None else self._main_deck_keys()
-        try:
-            await self._streamdeck.do_command({"update_display": {"keys": keys}})
-        except Exception as e:
-            LOGGER.warning("deck layout push failed: %s", e)
-
-    def _cancel_focus_timer(self) -> None:
-        if self._focus_timer_task and not self._focus_timer_task.done():
-            self._focus_timer_task.cancel()
-        self._focus_timer_task = None
-
-    def _arm_focus_timer(self) -> None:
-        self._cancel_focus_timer()
-        with contextlib.suppress(RuntimeError):
-            self._focus_timer_task = asyncio.create_task(self._focus_timeout_loop())
-
-    async def _focus_timeout_loop(self) -> None:
-        try:
-            await asyncio.sleep(self._focus_timeout_sec)
-        except asyncio.CancelledError:
-            return
-        self._focus_item_id = None
-        await self._push_full_deck_layout()
-
     async def _thermostat_toggle_and_repaint(self, payload: Any) -> dict:
         result = await self._dispatcher.thermostat_toggle(payload)
-        # Repaint now so we don't wait for the 30s refresh cycle.
-        await self._push_full_deck_layout()
+        await self._deck.push_layout()
         return result
 
     async def _focus_step(self, payload: Any) -> dict:
         if not isinstance(payload, dict):
             raise ValueError("payload must be an object")
         delta_raw = payload.get("delta", 0)
-        # Deltas coming back from the streamdeck have round-tripped through
-        # Go/structpb and arrive as float64. Accept whole-number floats.
+        # Streamdeck round-trips deltas through structpb — arrive as float64.
         if isinstance(delta_raw, bool) or not isinstance(delta_raw, int | float):
             raise ValueError("`delta` must be a non-zero integer")
         if isinstance(delta_raw, float) and not delta_raw.is_integer():
@@ -758,18 +540,16 @@ class Tracker(Generic):
         delta = int(delta_raw)
         if delta == 0:
             raise ValueError("`delta` must be a non-zero integer")
-        if self._focus_item_id is None:
-            # Stale key press — treat as no-op rather than an error so the
-            # deck's built-in error surface doesn't flash.
+        item_id = self._deck.focused_item_id
+        if item_id is None:
+            # Stale press after focus timed out; no-op so the deck doesn't flash red.
             return {"ok": True, "note": "not in focus mode"}
-        item_id = self._focus_item_id
         direction = 1 if delta > 0 else -1
         event_type = "item_incremented" if delta > 0 else "item_decremented"
-        by = abs(delta)
         result = await self._adjust_quantity(
-            {"id": item_id, "by": by}, direction=direction, event_type=event_type
+            {"id": item_id, "by": abs(delta)}, direction=direction, event_type=event_type
         )
-        self._arm_focus_timer()
+        self._deck.rearm_focus_timer()
         return result
 
     async def _reorder_deck(self, payload: Any) -> dict:
@@ -788,9 +568,9 @@ class Tracker(Generic):
         order = payload.get("order")
         if not isinstance(order, list):
             raise ValueError("`order` must be a list of item ids")
-        if len(order) > self._deck_key_count:
+        if len(order) > self._deck.key_count:
             raise ValueError(
-                f"`order` has {len(order)} ids but deck only has {self._deck_key_count} keys"
+                f"`order` has {len(order)} ids but deck only has {self._deck.key_count} keys"
             )
         if len(set(order)) != len(order):
             raise ValueError("`order` contains duplicate ids")
@@ -813,26 +593,16 @@ class Tracker(Generic):
                 item["updated_at"] = now
             self._save_state()
         await self._push_state_snapshot()
-        await self._push_full_deck_layout()
+        await self._deck.push_layout()
         return {"ok": True}
 
     async def _press(self, payload: Any) -> dict:
-        # Item key on the deck. Toggles focus mode: first press zooms in on
-        # the item with −/+ controls; pressing the item again exits back to
-        # the full grid. −/+ within focus mode go through `focus_step` and
-        # reset the auto-return timer.
         if not isinstance(payload, dict) or not payload.get("id"):
             raise ValueError("`id` is required")
         item_id = str(payload["id"])
         self._require_item(item_id)
-        if self._focus_item_id == item_id:
-            self._focus_item_id = None
-            self._cancel_focus_timer()
-        else:
-            self._focus_item_id = item_id
-            self._arm_focus_timer()
-        await self._push_full_deck_layout()
-        return {"ok": True, "focus_item_id": self._focus_item_id}
+        new_focus = await self._deck.press(item_id)
+        return {"ok": True, "focus_item_id": new_focus}
 
     async def _push_change_event(
         self, event_type: str, item: dict, delta: int, new_quantity: int
@@ -909,8 +679,8 @@ class Tracker(Generic):
             "kind": "inventory_tracker",
             "state_sensor": self._state_sensor_name,
             "events_sensor": self._events_sensor_name or None,
-            "streamdeck": self._streamdeck_name or None,
-            "deck_key_count": self._deck_key_count,
+            "streamdeck": self._deck.streamdeck_name or None,
+            "deck_key_count": self._deck.key_count,
             "item_count": len(self._state["items"]),
         }
 
