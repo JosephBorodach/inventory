@@ -867,3 +867,138 @@ async def test_deck_key_no_color_when_threshold_unset(tmp_path):
     keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
     assert "color" not in keys["3"]
     assert "text_color" not in keys["3"]
+
+
+# -- routine capability ------------------------------------------------
+
+
+async def _add_routine_item(t, name="Moisturizer", interval_days=1, package_qty=None, **overrides):
+    payload = {"name": name, "routine": {"interval_days": interval_days}, **overrides}
+    if package_qty is not None:
+        payload["package_qty"] = package_qty
+    resp = await t._add_item(payload)
+    return resp["item"]
+
+
+async def test_add_item_requires_supply_or_routine(tmp_path):
+    t, _, _, _ = _make(tmp_path)
+    with pytest.raises(ValueError, match="at least one of"):
+        await t._add_item({"name": "Nothing"})
+
+
+async def test_add_item_routine_only_omits_supply_fields(tmp_path):
+    t, _, _, _ = _make(tmp_path)
+    item = await _add_routine_item(t)
+    assert item["routine"] == {"interval_days": 1, "last_done_at": None}
+    assert item["package_qty"] is None
+    assert item["quantity"] is None
+
+
+async def test_add_item_hybrid_has_both_blocks(tmp_path):
+    t, _, _, _ = _make(tmp_path)
+    item = await _add_routine_item(t, name="Vitamins", package_qty=30)
+    assert item["package_qty"] == 30
+    assert item["quantity"] == 0
+    assert item["routine"]["interval_days"] == 1
+
+
+async def test_adjust_quantity_rejects_routine_only(tmp_path):
+    t, _, _, _ = _make(tmp_path)
+    item = await _add_routine_item(t)
+    with pytest.raises(ValueError, match="no supply tracking"):
+        await t._adjust_quantity({"id": item["id"]}, direction=1, event_type="item_incremented")
+
+
+async def test_set_routine_sets_the_block(tmp_path):
+    t, _, _, _ = _make(tmp_path)
+    item = await _add_egg(t)
+    resp = await t._set_routine({"id": item["id"], "routine": {"interval_days": 3}})
+    assert resp["item"]["routine"] == {"interval_days": 3, "last_done_at": None}
+
+
+async def test_clear_routine_removes_but_supply_stays(tmp_path):
+    t, _, _, _ = _make(tmp_path)
+    item = await _add_routine_item(t, name="Vitamins", package_qty=30)
+    await t._clear_routine({"id": item["id"]})
+    fresh = t._find_item(item["id"])
+    assert fresh["routine"] is None
+    assert fresh["package_qty"] == 30
+
+
+async def test_clear_routine_rejects_when_it_would_leave_no_capabilities(tmp_path):
+    t, _, _, _ = _make(tmp_path)
+    item = await _add_routine_item(t)
+    with pytest.raises(ValueError, match="no capabilities"):
+        await t._clear_routine({"id": item["id"]})
+
+
+async def test_mark_routine_done_sets_last_done_at(tmp_path):
+    t, _, _, _ = _make(tmp_path)
+    item = await _add_routine_item(t)
+    resp = await t._mark_routine_done({"id": item["id"]})
+    assert resp["item"]["routine"]["last_done_at"]
+
+
+async def test_mark_routine_done_on_hybrid_also_decrements(tmp_path):
+    t, _, _, _ = _make(tmp_path)
+    item = await _add_routine_item(t, name="Vitamins", package_qty=30)
+    await t._set_quantity({"id": item["id"], "quantity": 10})
+    resp = await t._mark_routine_done({"id": item["id"]})
+    assert resp["item"]["quantity"] == 9
+    assert resp["item"]["routine"]["last_done_at"]
+
+
+async def test_press_on_routine_item_marks_done(tmp_path):
+    t, _, _, _ = _make(tmp_path, with_streamdeck=True)
+    item = await _add_routine_item(t, button=_btn(3))
+    resp = await t._press({"id": item["id"]})
+    assert resp["item"]["routine"]["last_done_at"]
+
+
+async def test_press_on_supply_only_still_enters_focus(tmp_path):
+    t, _, _, _ = _make(tmp_path, with_streamdeck=True)
+    item = await _add_egg(t, button=_btn(3))
+    resp = await t._press({"id": item["id"]})
+    assert resp["focus_item_id"] == item["id"]
+
+
+async def test_deck_routine_never_done_is_green(tmp_path):
+    t, _, _, deck = _make(tmp_path, with_streamdeck=True)
+    await _add_routine_item(t, button=_btn(3))
+    keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
+    assert keys["3"]["color"] == "green"
+
+
+async def test_deck_routine_recently_done_is_gray(tmp_path):
+    t, _, _, deck = _make(tmp_path, with_streamdeck=True)
+    item = await _add_routine_item(t, button=_btn(3))
+    await t._mark_routine_done({"id": item["id"]})
+    keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
+    assert keys["3"]["color"] == "gray"
+
+
+async def test_deck_routine_overdue_is_green(tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    t, _, _, deck = _make(tmp_path, with_streamdeck=True)
+    long_ago = (datetime.now(UTC) - timedelta(days=5)).isoformat()
+    item = await _add_routine_item(t, button=_btn(3), interval_days=3)
+    item["routine"]["last_done_at"] = long_ago
+    await t._deck.push_layout()
+    keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
+    assert keys["3"]["color"] == "green"
+
+
+async def test_deck_routine_only_text_omits_count(tmp_path):
+    t, _, _, deck = _make(tmp_path, with_streamdeck=True)
+    await _add_routine_item(t, name="Moisturizer", button=_btn(3))
+    keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
+    assert keys["3"]["text"] == "Moisturizer"
+
+
+async def test_deck_hybrid_text_includes_count(tmp_path):
+    t, _, _, deck = _make(tmp_path, with_streamdeck=True)
+    item = await _add_routine_item(t, name="Vitamins", package_qty=30, button=_btn(3))
+    await t._set_quantity({"id": item["id"], "quantity": 12})
+    keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
+    assert keys["3"]["text"] == "Vitamins 12"
