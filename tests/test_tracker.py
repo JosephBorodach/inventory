@@ -173,6 +173,32 @@ async def test_atomic_write_uses_tempfile(tmp_path):
     assert len(payload["items"]) == 1
 
 
+async def test_load_state_quarantines_unreadable_file(tmp_path):
+    # Corrupt JSON: file exists but isn't parseable. We must NOT silently
+    # overwrite it — the user's inventory could be sitting in the bad file.
+    t, _, _, _ = _make(tmp_path)
+    path = Path(t._state_path)
+    path.write_text("{not valid json")
+    loaded = t._load_state()
+    assert loaded == {"schema_version": 1, "items": []}
+    assert not path.exists(), "corrupt file should have been moved aside"
+    corrupt_backups = list(path.parent.glob(f"{path.name}.corrupt-*"))
+    assert len(corrupt_backups) == 1
+    assert corrupt_backups[0].read_text() == "{not valid json"
+
+
+async def test_load_state_quarantines_bad_shape_file(tmp_path):
+    # File is valid JSON but the wrong shape (items not a list). Same
+    # protection applies.
+    t, _, _, _ = _make(tmp_path)
+    path = Path(t._state_path)
+    path.write_text('{"items": "not a list"}')
+    loaded = t._load_state()
+    assert loaded == {"schema_version": 1, "items": []}
+    assert not path.exists()
+    assert len(list(path.parent.glob(f"{path.name}.corrupt-*"))) == 1
+
+
 async def test_state_snapshot_pushed_on_mutation(tmp_path):
     t, state_sensor, _, _ = _make(tmp_path)
     await _add_egg(t)
