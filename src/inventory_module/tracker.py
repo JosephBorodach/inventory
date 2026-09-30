@@ -56,19 +56,11 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-# Low-level coercers. Domain validators below are thin wrappers that add
-# per-field null / empty-string handling and error text. Keeping the
-# bool-rejection + whole-number-float acceptance in one place stops these
-# rules from drifting apart per-field.
-
-
 def _coerce_int(field: str, value: Any, *, min_value: int, err_msg: str | None = None) -> int:
     err = err_msg or (
         f"`{field}` must be a {'positive' if min_value > 0 else 'non-negative'} integer"
     )
-    # bool is an int subclass in Python but is never a valid quantity/slot;
-    # reject it explicitly. Whole-number floats are accepted because protobuf
-    # serializes numeric config fields as double.
+    # bool is an int subclass; whole-number floats round-trip from proto as double.
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise ValueError(err)
     if isinstance(value, float) and not value.is_integer():
