@@ -45,7 +45,6 @@ def _make(
     t._deck_key_count = deck_key_count
     t._state_path = str(tmp_path / "inventory.json")
     t._state = {"schema_version": 1, "items": []}
-    t._state_lock = asyncio.Lock()
     return t, t._state_sensor, t._events_sensor, t._streamdeck
 
 
