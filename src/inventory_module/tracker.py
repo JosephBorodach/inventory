@@ -5,7 +5,7 @@ import json
 import logging
 import uuid
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -118,6 +118,37 @@ def _validate_image(value: Any) -> str | None:
     if value is None or value == "":
         return None
     return _coerce_stripped_string("image", value, err_msg="`image` must be a string or null")
+
+
+def _validate_routine(value: Any) -> dict | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("`routine` must be an object with `interval_days`")
+    interval_days = _require_positive_int("routine.interval_days", value.get("interval_days"))
+    last = value.get("last_done_at")
+    if last is not None and not isinstance(last, str):
+        raise ValueError("`routine.last_done_at` must be an ISO string or null")
+    if isinstance(last, str) and last:
+        try:
+            datetime.fromisoformat(last)
+        except ValueError as e:
+            raise ValueError(f"`routine.last_done_at` is not a valid ISO timestamp: {e}") from e
+    return {"interval_days": interval_days, "last_done_at": last if last else None}
+
+
+def _routine_actionable(routine: dict | None, now: datetime | None = None) -> bool:
+    if routine is None:
+        return False
+    last_iso = routine.get("last_done_at")
+    if not last_iso:
+        return True
+    try:
+        last = datetime.fromisoformat(last_iso)
+    except ValueError:
+        return True
+    now = now or datetime.now(UTC)
+    return (now - last) >= timedelta(days=int(routine.get("interval_days", 1)))
 
 
 def _parse_devices(attrs: dict) -> list[dict]:
@@ -366,7 +397,11 @@ class Tracker(Generic):
         if not isinstance(payload, dict):
             raise ValueError("payload must be an object")
         name = _require_non_empty_string("name", payload.get("name"))
-        package_qty = _require_positive_int("package_qty", payload.get("package_qty"))
+        raw_pkg = payload.get("package_qty")
+        package_qty = _require_positive_int("package_qty", raw_pkg) if raw_pkg is not None else None
+        routine = _validate_routine(payload.get("routine"))
+        if package_qty is None and routine is None:
+            raise ValueError("item must have at least one of `package_qty` or `routine`")
         raw_icon = payload.get("icon")
         icon = _require_non_empty_string("icon", raw_icon) if raw_icon not in (None, "") else ""
         button = _validate_button(payload.get("button"), self._devices_map())
@@ -382,12 +417,13 @@ class Tracker(Generic):
             "id": _new_id(),
             "name": name,
             "barcode": barcode,
-            "quantity": 0,
+            "quantity": 0 if package_qty is not None else None,
             "package_qty": package_qty,
             "icon": icon,
             "image": image,
             "threshold": threshold,
             "button": button,
+            "routine": routine,
             "created_at": now,
             "updated_at": now,
         }
@@ -431,6 +467,8 @@ class Tracker(Generic):
                 item["image"] = _validate_image(payload["image"])
             if "threshold" in payload:
                 item["threshold"] = _validate_threshold(payload["threshold"])
+            if "routine" in payload:
+                item["routine"] = _validate_routine(payload["routine"])
             item["button"] = button
             item["updated_at"] = _now_iso()
             snapshot = dict(item)
@@ -460,6 +498,8 @@ class Tracker(Generic):
         item_id = str(payload["id"])
         async with self._state_lock:
             item = self._require_item(item_id)
+            if item.get("package_qty") is None:
+                raise ValueError(f"item {item_id!r} has no supply tracking; can't adjust quantity")
             delta = direction * by
             new_qty = max(0, int(item.get("quantity", 0)) + delta)
             actual_delta = new_qty - int(item.get("quantity", 0))
@@ -484,12 +524,75 @@ class Tracker(Generic):
         item_id = str(payload["id"])
         async with self._state_lock:
             item = self._require_item(item_id)
+            if item.get("package_qty") is None:
+                raise ValueError(f"item {item_id!r} has no supply tracking; can't set quantity")
             delta = qty - int(item.get("quantity", 0))
             item["quantity"] = qty
             item["updated_at"] = _now_iso()
             snapshot = dict(item)
             self._save_state()
         await self._on_change("item_quantity_set", snapshot, delta=delta, new_quantity=qty)
+        return {"ok": True, "item": snapshot}
+
+    async def _set_routine(self, payload: Any) -> dict:
+        if not isinstance(payload, dict) or not payload.get("id"):
+            raise ValueError("`id` is required")
+        item_id = str(payload["id"])
+        routine = _validate_routine(payload.get("routine"))
+        if routine is None:
+            raise ValueError("`routine` is required (use clear_routine to remove)")
+        async with self._state_lock:
+            item = self._require_item(item_id)
+            item["routine"] = routine
+            item["updated_at"] = _now_iso()
+            snapshot = dict(item)
+            self._save_state()
+        await self._on_change(
+            "item_routine_set", snapshot, delta=0, new_quantity=snapshot.get("quantity") or 0
+        )
+        return {"ok": True, "item": snapshot}
+
+    async def _clear_routine(self, payload: Any) -> dict:
+        if not isinstance(payload, dict) or not payload.get("id"):
+            raise ValueError("`id` is required")
+        item_id = str(payload["id"])
+        async with self._state_lock:
+            item = self._require_item(item_id)
+            if item.get("package_qty") is None:
+                raise ValueError(f"item {item_id!r} would have no capabilities; delete it instead")
+            item["routine"] = None
+            item["updated_at"] = _now_iso()
+            snapshot = dict(item)
+            self._save_state()
+        await self._on_change(
+            "item_routine_cleared", snapshot, delta=0, new_quantity=snapshot.get("quantity") or 0
+        )
+        return {"ok": True, "item": snapshot}
+
+    async def _mark_routine_done(self, payload: Any) -> dict:
+        if not isinstance(payload, dict) or not payload.get("id"):
+            raise ValueError("`id` is required")
+        item_id = str(payload["id"])
+        now = _now_iso()
+        async with self._state_lock:
+            item = self._require_item(item_id)
+            routine = item.get("routine")
+            if routine is None:
+                raise ValueError(f"item {item_id!r} has no routine")
+            routine["last_done_at"] = now
+            # Hybrid items: one press = "I used one" = mark done + decrement.
+            if item.get("package_qty") is not None:
+                current = int(item.get("quantity") or 0)
+                item["quantity"] = max(0, current - 1)
+            item["updated_at"] = now
+            snapshot = dict(item)
+            self._save_state()
+        await self._on_change(
+            "item_routine_done",
+            snapshot,
+            delta=-1 if item.get("package_qty") is not None else 0,
+            new_quantity=snapshot.get("quantity") or 0,
+        )
         return {"ok": True, "item": snapshot}
 
     # -- State snapshot + events fanout -------------------------------
@@ -598,7 +701,9 @@ class Tracker(Generic):
         if not isinstance(payload, dict) or not payload.get("id"):
             raise ValueError("`id` is required")
         item_id = str(payload["id"])
-        self._require_item(item_id)
+        item = self._require_item(item_id)
+        if item.get("routine") is not None:
+            return await self._mark_routine_done({"id": item_id})
         new_focus = await self._deck.press(item_id)
         return {"ok": True, "focus_item_id": new_focus}
 
@@ -655,6 +760,12 @@ class Tracker(Generic):
             return await self._adjust_quantity(command, direction=-1, event_type="item_decremented")
         if verb == "set_quantity":
             return await self._set_quantity(command)
+        if verb == "set_routine":
+            return await self._set_routine(command)
+        if verb == "clear_routine":
+            return await self._clear_routine(command)
+        if verb == "mark_routine_done":
+            return await self._mark_routine_done(command)
         if verb == "reorder_deck":
             return await self._reorder_deck(command)
         if verb == "press":

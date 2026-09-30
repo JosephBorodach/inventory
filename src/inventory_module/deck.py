@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from viam.proto.common import ResourceName
@@ -171,8 +172,11 @@ class DeckRenderer:
         return out
 
     def _item_key(self, item: dict, *, color: str | None) -> dict:
+        name = item.get("name", "")
+        has_supply = item.get("package_qty") is not None
+        text = f"{name} {int(item.get('quantity') or 0)}" if has_supply else name
         cfg: dict[str, Any] = {
-            "text": f"{item.get('name', '')} {int(item.get('quantity', 0))}",
+            "text": text,
             "component": self._component_name,
             "method": "do_command",
             "args": [{"command": "press", "id": item["id"]}],
@@ -225,7 +229,7 @@ class DeckRenderer:
                 continue
             item = slotted.get(slot)
             if item is not None:
-                keys[str(slot)] = self._item_key(item, color=_threshold_color(item))
+                keys[str(slot)] = self._item_key(item, color=_item_color(item))
             else:
                 keys[str(slot)] = self._empty_slot()
         return keys
@@ -250,5 +254,23 @@ def _threshold_color(item: dict) -> str | None:
     threshold = item.get("threshold")
     if threshold is None:
         return None
-    qty = int(item.get("quantity", 0))
+    qty = int(item.get("quantity") or 0)
     return "green" if qty > threshold else "red"
+
+
+def _item_color(item: dict) -> str | None:
+    # Routine actionability trumps threshold — "press me now" beats "getting low".
+    routine = item.get("routine")
+    if routine is not None:
+        last_iso = routine.get("last_done_at")
+        actionable = True
+        if last_iso:
+            try:
+                last = datetime.fromisoformat(last_iso)
+                actionable = (datetime.now(UTC) - last) >= timedelta(
+                    days=int(routine.get("interval_days", 1))
+                )
+            except ValueError:
+                actionable = True
+        return "green" if actionable else "gray"
+    return _threshold_color(item)
