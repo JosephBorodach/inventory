@@ -34,7 +34,6 @@ def _make(
     with_events: bool = False,
     with_streamdeck: bool = False,
     deck_key_count: int = 15,
-    revert_delay_sec: float = 0.01,
 ) -> tuple[Tracker, RecordingSensor, RecordingSensor | None, RecordingSensor | None]:
     t = Tracker(name="inventory")
     t._state_sensor = RecordingSensor()
@@ -44,7 +43,6 @@ def _make(
     t._streamdeck = RecordingSensor() if with_streamdeck else None
     t._streamdeck_name = "streamdeck" if with_streamdeck else ""
     t._deck_key_count = deck_key_count
-    t._revert_delay_sec = revert_delay_sec
     t._state_path = str(tmp_path / "inventory.json")
     t._state = {"schema_version": 1, "items": []}
     t._state_lock = asyncio.Lock()
@@ -542,8 +540,15 @@ def mock_item_id(tracker: Tracker) -> str:
 # -- reserved slots: water / feed / thermostat --------------------------
 
 
-def _with_reserved(tmp_path, *, waterer=True, feeder=True, thermostat=True,
-                   thermostat_position: int = 0, manual_water_ml: int = 50):
+def _with_reserved(
+    tmp_path,
+    *,
+    waterer=True,
+    feeder=True,
+    thermostat=True,
+    thermostat_position: int = 0,
+    manual_water_ml: int = 50,
+):
     t, _, _, deck = _make(tmp_path, with_streamdeck=True)
     if waterer:
         t._waterer = RecordingSensor()
@@ -674,10 +679,12 @@ async def test_reorder_deck_swaps_slots_atomically(tmp_path):
     a = await _add_egg(t, name="Aspirin", deck_page=0, deck_slot=0)
     b = await _add_egg(t, name="Bread", deck_page=0, deck_slot=1)
     c = await _add_egg(t, name="Cola", deck_page=0, deck_slot=2)
-    resp = await t.do_command({
-        "command": "reorder_deck",
-        "order": [c["id"], a["id"], b["id"]],
-    })
+    resp = await t.do_command(
+        {
+            "command": "reorder_deck",
+            "order": [c["id"], a["id"], b["id"]],
+        }
+    )
     assert resp == {"ok": True}
     assert t._find_item(c["id"])["deck_slot"] == 0
     assert t._find_item(a["id"])["deck_slot"] == 1

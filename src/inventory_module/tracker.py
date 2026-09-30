@@ -26,7 +26,6 @@ LOGGER = logging.getLogger(__name__)
 
 DEFAULT_STATE_PATH = "~/.viam/inventory.json"
 DEFAULT_DECK_KEY_COUNT = 15
-DEFAULT_REVERT_DELAY_SEC = 3.0
 DEFAULT_DECK_REFRESH_SEC = 30
 DEFAULT_FOCUS_TIMEOUT_SEC = 60.0
 FOCUS_MINUS_SLOT = 6
@@ -206,8 +205,6 @@ class Tracker(Generic):
         self._streamdeck: GenericService | None = None
         self._streamdeck_name: str = ""
         self._deck_key_count: int = DEFAULT_DECK_KEY_COUNT
-        self._revert_delay_sec: float = DEFAULT_REVERT_DELAY_SEC
-        self._revert_tasks: dict[int, asyncio.Task] = {}
         self._state_path: str = ""
         self._state: dict = {"schema_version": SCHEMA_VERSION, "items": []}
         self._state_lock: asyncio.Lock | None = None
@@ -371,10 +368,6 @@ class Tracker(Generic):
         self._state = self._load_state()
         self._state_lock = asyncio.Lock()
 
-        for task in self._revert_tasks.values():
-            task.cancel()
-        self._revert_tasks = {}
-
         self._focus_item_id = None
         self._cancel_focus_timer()
 
@@ -460,9 +453,7 @@ class Tracker(Generic):
         name = _require_non_empty_string("name", payload.get("name"))
         package_qty = _require_positive_int("package_qty", payload.get("package_qty"))
         raw_icon = payload.get("icon")
-        icon = (
-            _require_non_empty_string("icon", raw_icon) if raw_icon not in (None, "") else ""
-        )
+        icon = _require_non_empty_string("icon", raw_icon) if raw_icon not in (None, "") else ""
         deck_page, deck_slot = _validate_deck_pair(
             payload.get("deck_page"), payload.get("deck_slot"), self._deck_key_count
         )
@@ -524,9 +515,7 @@ class Tracker(Generic):
             if "name" in payload:
                 item["name"] = _require_non_empty_string("name", payload["name"])
             if "package_qty" in payload:
-                item["package_qty"] = _require_positive_int(
-                    "package_qty", payload["package_qty"]
-                )
+                item["package_qty"] = _require_positive_int("package_qty", payload["package_qty"])
             if "icon" in payload:
                 raw_icon = payload["icon"]
                 item["icon"] = (
@@ -545,9 +534,7 @@ class Tracker(Generic):
             item["updated_at"] = _now_iso()
             snapshot = dict(item)
             self._save_state()
-        await self._on_change(
-            "item_edited", snapshot, delta=0, new_quantity=snapshot["quantity"]
-        )
+        await self._on_change("item_edited", snapshot, delta=0, new_quantity=snapshot["quantity"])
         return {"ok": True, "item": snapshot}
 
     async def _delete_item(self, payload: Any) -> dict:
@@ -565,9 +552,7 @@ class Tracker(Generic):
         )
         return {"ok": True, "id": item_id}
 
-    async def _adjust_quantity(
-        self, payload: Any, direction: int, event_type: str
-    ) -> dict:
+    async def _adjust_quantity(self, payload: Any, direction: int, event_type: str) -> dict:
         if not isinstance(payload, dict) or not payload.get("id"):
             raise ValueError("`id` is required")
         by_raw = payload.get("by", 1)
@@ -583,9 +568,7 @@ class Tracker(Generic):
             item["updated_at"] = _now_iso()
             snapshot = dict(item)
             self._save_state()
-        await self._on_change(
-            event_type, snapshot, delta=actual_delta, new_quantity=new_qty
-        )
+        await self._on_change(event_type, snapshot, delta=actual_delta, new_quantity=new_qty)
         return {"ok": True, "item": snapshot}
 
     async def _set_quantity(self, payload: Any) -> dict:
@@ -608,9 +591,7 @@ class Tracker(Generic):
             item["updated_at"] = _now_iso()
             snapshot = dict(item)
             self._save_state()
-        await self._on_change(
-            "item_quantity_set", snapshot, delta=delta, new_quantity=qty
-        )
+        await self._on_change("item_quantity_set", snapshot, delta=delta, new_quantity=qty)
         return {"ok": True, "item": snapshot}
 
     # -- State snapshot + events fanout -------------------------------
@@ -653,8 +634,7 @@ class Tracker(Generic):
             "source": self.name,
             "at": _now_iso(),
             "items": [
-                {k: v for k, v in item.items() if v is not None}
-                for item in self._snapshot_items()
+                {k: v for k, v in item.items() if v is not None} for item in self._snapshot_items()
             ],
         }
         try:
@@ -828,11 +808,7 @@ class Tracker(Generic):
     async def _push_full_deck_layout(self) -> None:
         if self._streamdeck is None:
             return
-        focused = (
-            self._find_item(self._focus_item_id)
-            if self._focus_item_id is not None
-            else None
-        )
+        focused = self._find_item(self._focus_item_id) if self._focus_item_id is not None else None
         if focused is None and self._focus_item_id is not None:
             # Focused item was deleted or moved — drop focus quietly.
             self._focus_item_id = None
