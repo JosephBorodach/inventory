@@ -338,8 +338,6 @@ class Tracker(Generic):
             )
 
     def _migrate_items(self) -> None:
-        # One-time: rewrite legacy deck_page/deck_slot into button {device, slot}.
-        # Only migrates when the "kitchen" device is declared (the sole pre-multi-device option).
         dirty = False
         for item in self._state["items"]:
             if "button" in item:
@@ -556,10 +554,8 @@ class Tracker(Generic):
         return result
 
     async def _reorder_deck(self, payload: Any) -> dict:
-        # Atomic slot reassignment for one device. Ordered list of item ids
-        # is assigned slots 0..N-1; items previously on this device but
-        # absent from `order` get their button cleared. One lock so we
-        # don't hit spurious slot-collision errors mid-reorder.
+        # Reassign under one lock — sequential edit_item calls would hit
+        # spurious slot-collision errors when swapping two items.
         if not isinstance(payload, dict):
             raise ValueError("payload must be an object")
         devices = self._devices_map()
