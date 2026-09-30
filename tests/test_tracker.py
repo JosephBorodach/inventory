@@ -261,8 +261,8 @@ def _stub_fetch(mapping: dict[str, dict | None]):
 async def test_lookup_barcode_found_returns_prefill(tmp_path, monkeypatch):
     t, _, _, _ = _make(tmp_path)
     fake = _stub_fetch({"1234": {"name": "Milk", "brand": "Acme"}})
-    monkeypatch.setattr("inventory_module.tracker._fetch_openfoodfacts", fake)
-    resp = await t._lookup_barcode({"barcode": "1234"})
+    monkeypatch.setattr("inventory_module.barcode._fetch_openfoodfacts", fake)
+    resp = await t._barcode.lookup({"barcode": "1234"})
     assert resp == {
         "ok": True,
         "found": True,
@@ -273,8 +273,8 @@ async def test_lookup_barcode_found_returns_prefill(tmp_path, monkeypatch):
 
 async def test_lookup_barcode_missing_returns_empty_prefill(tmp_path, monkeypatch):
     t, _, _, _ = _make(tmp_path)
-    monkeypatch.setattr("inventory_module.tracker._fetch_openfoodfacts", _stub_fetch({}))
-    resp = await t._lookup_barcode({"barcode": "9999"})
+    monkeypatch.setattr("inventory_module.barcode._fetch_openfoodfacts", _stub_fetch({}))
+    resp = await t._barcode.lookup({"barcode": "9999"})
     assert resp["found"] is False
     assert resp["prefill"] == {}
 
@@ -282,34 +282,34 @@ async def test_lookup_barcode_missing_returns_empty_prefill(tmp_path, monkeypatc
 async def test_lookup_barcode_caches_hits(tmp_path, monkeypatch):
     t, _, _, _ = _make(tmp_path)
     fake = _stub_fetch({"1234": {"name": "Milk"}})
-    monkeypatch.setattr("inventory_module.tracker._fetch_openfoodfacts", fake)
-    await t._lookup_barcode({"barcode": "1234"})
-    await t._lookup_barcode({"barcode": "1234"})
+    monkeypatch.setattr("inventory_module.barcode._fetch_openfoodfacts", fake)
+    await t._barcode.lookup({"barcode": "1234"})
+    await t._barcode.lookup({"barcode": "1234"})
     assert fake.calls == ["1234"], "cache should have short-circuited the second call"
 
 
 async def test_lookup_barcode_does_not_cache_misses(tmp_path, monkeypatch):
     t, _, _, _ = _make(tmp_path)
     fake = _stub_fetch({"1234": None})
-    monkeypatch.setattr("inventory_module.tracker._fetch_openfoodfacts", fake)
-    await t._lookup_barcode({"barcode": "1234"})
-    await t._lookup_barcode({"barcode": "1234"})
+    monkeypatch.setattr("inventory_module.barcode._fetch_openfoodfacts", fake)
+    await t._barcode.lookup({"barcode": "1234"})
+    await t._barcode.lookup({"barcode": "1234"})
     assert fake.calls == ["1234", "1234"], "misses should re-fetch on retry"
 
 
 async def test_lookup_barcode_requires_barcode(tmp_path):
     t, _, _, _ = _make(tmp_path)
     with pytest.raises(ValueError):
-        await t._lookup_barcode({})
+        await t._barcode.lookup({})
     with pytest.raises(ValueError):
-        await t._lookup_barcode({"barcode": ""})
+        await t._barcode.lookup({"barcode": ""})
 
 
 async def test_scan_barcode_known_item_increments_by_package_qty(tmp_path, monkeypatch):
     t, _, _, _ = _make(tmp_path)
-    monkeypatch.setattr("inventory_module.tracker._fetch_openfoodfacts", _stub_fetch({}))
+    monkeypatch.setattr("inventory_module.barcode._fetch_openfoodfacts", _stub_fetch({}))
     item = await _add_egg(t, name="Eggs", package_qty=12, barcode="1234")
-    resp = await t._scan_barcode({"barcode": "1234"})
+    resp = await t._barcode.scan({"barcode": "1234"})
     assert resp["matched"] is True
     assert resp["added"] == 12
     assert resp["item"]["quantity"] == 12
@@ -319,10 +319,10 @@ async def test_scan_barcode_known_item_increments_by_package_qty(tmp_path, monke
 async def test_scan_barcode_unknown_returns_prefill(tmp_path, monkeypatch):
     t, _, _, _ = _make(tmp_path)
     monkeypatch.setattr(
-        "inventory_module.tracker._fetch_openfoodfacts",
+        "inventory_module.barcode._fetch_openfoodfacts",
         _stub_fetch({"9999": {"name": "Something", "brand": "Foo"}}),
     )
-    resp = await t._scan_barcode({"barcode": "9999"})
+    resp = await t._barcode.scan({"barcode": "9999"})
     assert resp["matched"] is False
     assert resp["barcode"] == "9999"
     assert resp["prefill"] == {"name": "Something", "brand": "Foo"}
@@ -330,8 +330,8 @@ async def test_scan_barcode_unknown_returns_prefill(tmp_path, monkeypatch):
 
 async def test_scan_barcode_unknown_with_no_off_data(tmp_path, monkeypatch):
     t, _, _, _ = _make(tmp_path)
-    monkeypatch.setattr("inventory_module.tracker._fetch_openfoodfacts", _stub_fetch({}))
-    resp = await t._scan_barcode({"barcode": "9999"})
+    monkeypatch.setattr("inventory_module.barcode._fetch_openfoodfacts", _stub_fetch({}))
+    resp = await t._barcode.scan({"barcode": "9999"})
     assert resp["matched"] is False
     assert resp["prefill"] == {}
 
@@ -339,10 +339,10 @@ async def test_scan_barcode_unknown_with_no_off_data(tmp_path, monkeypatch):
 async def test_barcode_cache_persists_across_load(tmp_path, monkeypatch):
     t, _, _, _ = _make(tmp_path)
     monkeypatch.setattr(
-        "inventory_module.tracker._fetch_openfoodfacts",
+        "inventory_module.barcode._fetch_openfoodfacts",
         _stub_fetch({"1234": {"name": "Milk"}}),
     )
-    await t._lookup_barcode({"barcode": "1234"})
+    await t._barcode.lookup({"barcode": "1234"})
 
     t2 = Tracker(name="inventory")
     t2._state_path = t._state_path
