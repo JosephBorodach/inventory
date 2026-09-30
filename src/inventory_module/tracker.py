@@ -207,7 +207,9 @@ class Tracker(Generic):
         self._deck_key_count: int = DEFAULT_DECK_KEY_COUNT
         self._state_path: str = ""
         self._state: dict = {"schema_version": SCHEMA_VERSION, "items": []}
-        self._state_lock: asyncio.Lock | None = None
+        # Constructed once so it survives reconfigure — recreating a lock
+        # while a mutation might be holding it would break serialization.
+        self._state_lock: asyncio.Lock = asyncio.Lock()
         self._boot_task: asyncio.Task | None = None
         self._deck_refresh_task: asyncio.Task | None = None
         self._deck_refresh_sec: float = DEFAULT_DECK_REFRESH_SEC
@@ -366,7 +368,6 @@ class Tracker(Generic):
             )
 
         self._state = self._load_state()
-        self._state_lock = asyncio.Lock()
 
         self._focus_item_id = None
         self._cancel_focus_timer()
@@ -481,7 +482,6 @@ class Tracker(Generic):
             "created_at": now,
             "updated_at": now,
         }
-        assert self._state_lock is not None
         async with self._state_lock:
             self._state["items"].append(item)
             self._save_state()
@@ -496,7 +496,6 @@ class Tracker(Generic):
                 "`quantity` is not editable via edit_item; use increment/decrement/set_quantity"
             )
         item_id = str(payload["id"])
-        assert self._state_lock is not None
         async with self._state_lock:
             item = self._require_item(item_id)
             new_deck_page = payload["deck_page"] if "deck_page" in payload else item["deck_page"]
@@ -541,7 +540,6 @@ class Tracker(Generic):
         item_id = payload if isinstance(payload, str) else (payload or {}).get("id")
         if not isinstance(item_id, str) or not item_id:
             raise ValueError("`id` is required")
-        assert self._state_lock is not None
         async with self._state_lock:
             item = self._require_item(item_id)
             snapshot = dict(item)
@@ -558,7 +556,6 @@ class Tracker(Generic):
         by_raw = payload.get("by", 1)
         by = _require_positive_int("by", by_raw)
         item_id = str(payload["id"])
-        assert self._state_lock is not None
         async with self._state_lock:
             item = self._require_item(item_id)
             delta = direction * by
@@ -583,7 +580,6 @@ class Tracker(Generic):
         if qty < 0:
             raise ValueError("`quantity` must be a non-negative integer")
         item_id = str(payload["id"])
-        assert self._state_lock is not None
         async with self._state_lock:
             item = self._require_item(item_id)
             delta = qty - int(item.get("quantity", 0))
@@ -925,7 +921,6 @@ class Tracker(Generic):
             )
         if len(set(order)) != len(order):
             raise ValueError("`order` contains duplicate ids")
-        assert self._state_lock is not None
         async with self._state_lock:
             for item_id in order:
                 if not isinstance(item_id, str) or not item_id:
@@ -995,7 +990,6 @@ class Tracker(Generic):
         prefill = await asyncio.to_thread(_fetch_openfoodfacts, barcode)
         if prefill is None:
             return None
-        assert self._state_lock is not None
         async with self._state_lock:
             self._state.setdefault("barcode_cache", {})[barcode] = prefill
             self._save_state()
