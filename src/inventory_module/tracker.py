@@ -44,6 +44,10 @@ OPENFOODFACTS_URL = "https://world.openfoodfacts.org/api/v0/product/{barcode}.js
 OPENFOODFACTS_TIMEOUT_SEC = 8.0
 
 
+def _fresh_state() -> dict:
+    return {"schema_version": SCHEMA_VERSION, "items": []}
+
+
 def _new_id() -> str:
     return uuid.uuid4().hex[:12]
 
@@ -206,7 +210,7 @@ class Tracker(Generic):
         self._streamdeck_name: str = ""
         self._deck_key_count: int = DEFAULT_DECK_KEY_COUNT
         self._state_path: str = ""
-        self._state: dict = {"schema_version": SCHEMA_VERSION, "items": []}
+        self._state: dict = _fresh_state()
         # Constructed once so it survives reconfigure — recreating a lock
         # while a mutation might be holding it would break serialization.
         self._state_lock: asyncio.Lock = asyncio.Lock()
@@ -389,17 +393,41 @@ class Tracker(Generic):
     def _load_state(self) -> dict:
         path = Path(self._state_path).expanduser()
         if not path.exists():
-            return {"schema_version": SCHEMA_VERSION, "items": []}
+            return _fresh_state()
         try:
             loaded = json.loads(path.read_text())
         except Exception as e:
-            LOGGER.warning("failed to load state from %s: %s", path, e)
-            return {"schema_version": SCHEMA_VERSION, "items": []}
+            self._quarantine_corrupt_state(path, f"unreadable: {e}")
+            return _fresh_state()
         if not isinstance(loaded, dict) or not isinstance(loaded.get("items"), list):
-            LOGGER.warning("state file %s has bad shape; starting fresh", path)
-            return {"schema_version": SCHEMA_VERSION, "items": []}
+            self._quarantine_corrupt_state(path, "bad shape")
+            return _fresh_state()
         loaded.setdefault("schema_version", SCHEMA_VERSION)
         return loaded
+
+    def _quarantine_corrupt_state(self, path: Path, reason: str) -> None:
+        # Rename the bad file out of the way BEFORE returning empty state,
+        # so the next _save_state() doesn't overwrite it with []. Without
+        # this, any transient JSON corruption would silently wipe the
+        # user's inventory and there'd be no way to recover.
+        ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+        backup = path.with_suffix(f"{path.suffix}.corrupt-{ts}")
+        try:
+            path.rename(backup)
+            LOGGER.error(
+                "state file %s is corrupt (%s); moved to %s and starting fresh",
+                path,
+                reason,
+                backup,
+            )
+        except OSError as e:
+            LOGGER.error(
+                "state file %s is corrupt (%s) and could not be moved aside (%s); "
+                "starting fresh — original file WILL BE OVERWRITTEN on next save",
+                path,
+                reason,
+                e,
+            )
 
     def _save_state(self) -> None:
         path = Path(self._state_path).expanduser()
