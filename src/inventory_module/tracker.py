@@ -56,34 +56,42 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _require_non_empty_string(field: str, value: Any) -> str:
+def _coerce_int(field: str, value: Any, *, min_value: int, err_msg: str | None = None) -> int:
+    err = err_msg or (
+        f"`{field}` must be a {'positive' if min_value > 0 else 'non-negative'} integer"
+    )
+    # bool is an int subclass; whole-number floats round-trip from proto as double.
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise ValueError(err)
+    if isinstance(value, float) and not value.is_integer():
+        raise ValueError(err)
+    ival = int(value)
+    if ival < min_value:
+        raise ValueError(err)
+    return ival
+
+
+def _coerce_stripped_string(field: str, value: Any, err_msg: str | None = None) -> str:
+    err = err_msg or f"`{field}` must be a non-empty string"
     if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"`{field}` must be a non-empty string")
+        raise ValueError(err)
     return value.strip()
 
 
+def _require_non_empty_string(field: str, value: Any) -> str:
+    return _coerce_stripped_string(field, value)
+
+
 def _require_positive_int(field: str, value: Any) -> int:
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        raise ValueError(f"`{field}` must be a positive integer")
-    if isinstance(value, float) and not value.is_integer():
-        raise ValueError(f"`{field}` must be a positive integer")
-    ival = int(value)
-    if ival <= 0:
-        raise ValueError(f"`{field}` must be a positive integer")
-    return ival
+    return _coerce_int(field, value, min_value=1)
 
 
 def _optional_non_neg_int(field: str, value: Any) -> int | None:
     if value is None:
         return None
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        raise ValueError(f"`{field}` must be a non-negative integer or null")
-    if isinstance(value, float) and not value.is_integer():
-        raise ValueError(f"`{field}` must be a non-negative integer or null")
-    ival = int(value)
-    if ival < 0:
-        raise ValueError(f"`{field}` must be a non-negative integer or null")
-    return ival
+    return _coerce_int(
+        field, value, min_value=0, err_msg=f"`{field}` must be a non-negative integer or null"
+    )
 
 
 def _validate_deck_pair(
@@ -103,22 +111,21 @@ def _validate_deck_pair(
 def _validate_barcode(value: Any) -> str | None:
     if value is None:
         return None
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError("`barcode` must be a non-empty string or null")
-    return value.strip()
+    return _coerce_stripped_string(
+        "barcode", value, err_msg="`barcode` must be a non-empty string or null"
+    )
 
 
 def _validate_threshold(value: Any) -> int | None:
+    # Empty string is accepted as null — CLI/MCP paths coerce proto null to "".
     if value is None or value == "":
         return None
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        raise ValueError("`threshold` must be a non-negative integer or null")
-    if isinstance(value, float) and not value.is_integer():
-        raise ValueError("`threshold` must be a non-negative integer or null")
-    ival = int(value)
-    if ival < 0:
-        raise ValueError("`threshold` must be a non-negative integer or null")
-    return ival
+    return _coerce_int(
+        "threshold",
+        value,
+        min_value=0,
+        err_msg="`threshold` must be a non-negative integer or null",
+    )
 
 
 def _threshold_color(item: dict) -> str | None:
@@ -130,23 +137,16 @@ def _threshold_color(item: dict) -> str | None:
 
 
 def _validate_image(value: Any) -> str | None:
-    # Empty string is accepted as "clear the image" — it's what proto null
-    # gets coerced to in some CLI/MCP paths, and it's a natural way for
-    # callers to unset the field.
+    # Empty string is accepted as null — see _validate_threshold for why.
     if value is None or value == "":
         return None
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError("`image` must be a string or null")
-    return value.strip()
+    return _coerce_stripped_string("image", value, err_msg="`image` must be a string or null")
 
 
 def _require_barcode_input(payload: Any) -> str:
     if not isinstance(payload, dict):
         raise ValueError("`barcode` is required")
-    barcode = payload.get("barcode")
-    if not isinstance(barcode, str) or not barcode.strip():
-        raise ValueError("`barcode` must be a non-empty string")
-    return barcode.strip()
+    return _coerce_stripped_string("barcode", payload.get("barcode"))
 
 
 def _emoji_to_image_name(icon: str) -> str | None:
