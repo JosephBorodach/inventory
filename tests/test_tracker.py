@@ -575,16 +575,17 @@ def _with_reserved(
     manual_water_ml: int = 50,
 ):
     t, _, _, deck = _make(tmp_path, with_streamdeck=True)
+    d = t._dispatcher
     if waterer:
-        t._waterer = RecordingSensor()
-        t._waterer_name = "waterer"
+        d._waterer = RecordingSensor()
+        d._waterer_name = "waterer"
     if feeder:
-        t._feeder = RecordingSensor()
-        t._feeder_name = "feeder"
+        d._feeder = RecordingSensor()
+        d._feeder_name = "feeder"
     if thermostat:
-        t._thermostat_switch = RecordingSwitch(position=thermostat_position)
-        t._thermostat_switch_name = "thermostat"
-    t._manual_water_ml = manual_water_ml
+        d._thermostat_switch = RecordingSwitch(position=thermostat_position)
+        d._thermostat_switch_name = "thermostat"
+    d._manual_water_ml = manual_water_ml
     return t, deck
 
 
@@ -635,21 +636,21 @@ async def test_thermostat_off_shows_turn_on_action(tmp_path):
 
 async def test_water_manual_calls_waterer_with_configured_ml(tmp_path):
     t, _ = _with_reserved(tmp_path, feeder=False, thermostat=False, manual_water_ml=75)
-    await t._water_manual({})
-    assert t._waterer.commands == [{"command": "dispense_ml", "ml": 75}]
+    await t._dispatcher.water_manual({})
+    assert t._dispatcher._waterer.commands == [{"command": "dispense_ml", "ml": 75}]
 
 
 async def test_feed_now_calls_feeder(tmp_path):
     t, _ = _with_reserved(tmp_path, waterer=False, thermostat=False)
-    await t._feed_now({})
-    assert t._feeder.commands == [{"command": "feed_now"}]
+    await t._dispatcher.feed_now({})
+    assert t._dispatcher._feeder.commands == [{"command": "feed_now"}]
 
 
 async def test_thermostat_toggle_flips_position(tmp_path):
     t, deck = _with_reserved(tmp_path, waterer=False, feeder=False, thermostat_position=0)
-    resp = await t._thermostat_toggle({})
+    resp = await t._thermostat_toggle_and_repaint({})
     assert resp["position"] == 1
-    assert t._thermostat_switch.set_calls == [1]
+    assert t._dispatcher._thermostat_switch.set_calls == [1]
     # Layout re-push shows the new label immediately — now that it's on,
     # the action label flips to "press to turn OFF".
     keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
@@ -679,9 +680,9 @@ async def test_reserved_slot_hides_preexisting_item(tmp_path):
     # the deck shows the water key.
     t, _ = _with_reserved(tmp_path, feeder=False, thermostat=False)
     # Bypass validation to plant an item on a would-be reserved slot.
-    t._waterer = None
+    t._dispatcher._waterer = None
     await _add_egg(t, deck_page=0, deck_slot=12, name="Ghost")
-    t._waterer = RecordingSensor()
+    t._dispatcher._waterer = RecordingSensor()
     keys = t._main_deck_keys()
     assert keys["12"]["text"].startswith("Water")
 
