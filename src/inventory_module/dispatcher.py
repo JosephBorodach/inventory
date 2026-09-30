@@ -1,0 +1,191 @@
+"""Home-action dispatch: reserved streamdeck keys that fire waterer /
+feeder / thermostat commands. Owns the layout of the reserved bottom-
+right slots and the click-through to the underlying components. The
+tracker composes this rather than embedding it — the actions have
+nothing to do with inventory.
+"""
+
+import logging
+from collections.abc import Mapping
+from typing import Any
+
+from viam.components.generic import Generic
+from viam.components.switch import Switch
+from viam.proto.common import ResourceName
+from viam.resource.base import ResourceBase
+from viam.services.generic import Generic as GenericService
+
+LOGGER = logging.getLogger(__name__)
+
+RESERVED_WATER_OFFSET = 3
+RESERVED_FEED_OFFSET = 2
+RESERVED_THERMOSTAT_OFFSET = 1
+DEFAULT_MANUAL_WATER_ML = 50
+
+
+class HomeActionDispatcher:
+    def __init__(self, component_name: str) -> None:
+        self._component_name = component_name
+        self._waterer: GenericService | None = None
+        self._waterer_name: str = ""
+        self._feeder: GenericService | None = None
+        self._feeder_name: str = ""
+        self._thermostat_switch: Switch | None = None
+        self._thermostat_switch_name: str = ""
+        self._manual_water_ml: int = DEFAULT_MANUAL_WATER_ML
+        self._thermostat_on: bool | None = None
+
+    @staticmethod
+    def validate_config_attrs(attrs: dict) -> list[str]:
+        optional: list[str] = []
+        for key in ("waterer", "feeder", "thermostat_switch"):
+            val = attrs.get(key)
+            if val is not None:
+                if not isinstance(val, str) or not val:
+                    raise ValueError(f"`{key}` must be a non-empty string")
+                optional.append(val)
+        manual_water_ml = attrs.get("manual_water_ml")
+        if manual_water_ml is not None and (
+            isinstance(manual_water_ml, bool)
+            or not isinstance(manual_water_ml, int | float)
+            or manual_water_ml <= 0
+        ):
+            raise ValueError("`manual_water_ml` must be a positive integer")
+        return optional
+
+    def reconfigure(self, attrs: dict, dependencies: Mapping[ResourceName, ResourceBase]) -> None:
+        self._waterer_name = str(attrs.get("waterer") or "")
+        self._feeder_name = str(attrs.get("feeder") or "")
+        self._thermostat_switch_name = str(attrs.get("thermostat_switch") or "")
+        self._manual_water_ml = int(attrs.get("manual_water_ml") or DEFAULT_MANUAL_WATER_ML)
+
+        self._waterer = None
+        self._feeder = None
+        self._thermostat_switch = None
+        for name, resource in dependencies.items():
+            if (
+                self._waterer_name
+                and name.name == self._waterer_name
+                # Waterer/feeder can be either a Generic component or a Generic
+                # service — most existing modules ship as components.
+                and isinstance(resource, Generic | GenericService)
+            ):
+                self._waterer = resource
+            elif (
+                self._feeder_name
+                and name.name == self._feeder_name
+                and isinstance(resource, Generic | GenericService)
+            ):
+                self._feeder = resource
+            elif (
+                self._thermostat_switch_name
+                and name.name == self._thermostat_switch_name
+                and isinstance(resource, Switch)
+            ):
+                self._thermostat_switch = resource
+
+        if self._waterer_name and self._waterer is None:
+            LOGGER.warning(
+                "waterer %r not resolved (need Generic component or service); "
+                "reserved water key disabled",
+                self._waterer_name,
+            )
+        if self._feeder_name and self._feeder is None:
+            LOGGER.warning(
+                "feeder %r not resolved (need Generic component or service); "
+                "reserved feed key disabled",
+                self._feeder_name,
+            )
+        if self._thermostat_switch_name and self._thermostat_switch is None:
+            LOGGER.warning(
+                "thermostat_switch %r not resolved (need Switch component); "
+                "reserved thermostat key disabled",
+                self._thermostat_switch_name,
+            )
+
+    async def water_manual(self, _payload: Any) -> dict:
+        if self._waterer is None:
+            raise RuntimeError("no waterer configured")
+        return await self._waterer.do_command(
+            {"command": "dispense_ml", "ml": self._manual_water_ml}
+        )
+
+    async def feed_now(self, _payload: Any) -> dict:
+        if self._feeder is None:
+            raise RuntimeError("no feeder configured")
+        return await self._feeder.do_command({"command": "feed_now"})
+
+    async def thermostat_toggle(self, _payload: Any) -> dict:
+        if self._thermostat_switch is None:
+            raise RuntimeError("no thermostat_switch configured")
+        pos = await self._thermostat_switch.get_position()
+        new_pos = 0 if pos == 1 else 1
+        await self._thermostat_switch.set_position(new_pos)
+        self._thermostat_on = new_pos == 1
+        return {"ok": True, "position": new_pos}
+
+    async def refresh_thermostat_state(self) -> None:
+        if self._thermostat_switch is None:
+            self._thermostat_on = None
+            return
+        try:
+            pos = await self._thermostat_switch.get_position()
+        except Exception as e:
+            LOGGER.warning("thermostat state read failed: %s", e)
+            return
+        self._thermostat_on = pos == 1
+
+    def reserved_slot_map(self, deck_key_count: int) -> dict[int, str]:
+        # Reserved slots count back from the end so they always sit on the
+        # bottom-right of any deck size. Each slot is only reserved when its
+        # dep is actually resolved — otherwise the slot stays available.
+        reserved: dict[int, str] = {}
+        if self._waterer is not None:
+            reserved[deck_key_count - RESERVED_WATER_OFFSET] = "water"
+        if self._feeder is not None:
+            reserved[deck_key_count - RESERVED_FEED_OFFSET] = "feed"
+        if self._thermostat_switch is not None:
+            reserved[deck_key_count - RESERVED_THERMOSTAT_OFFSET] = "thermostat"
+        return reserved
+
+    def reserved_slot_config(self, kind: str) -> dict | None:
+        if kind == "water":
+            return self._water_key_config()
+        if kind == "feed":
+            return self._feed_key_config()
+        if kind == "thermostat":
+            return self._thermostat_key_config()
+        return None
+
+    def _water_key_config(self) -> dict:
+        return {
+            "text": f"Water {self._manual_water_ml}ml",
+            "color": "",
+            "text_color": "",
+            "component": self._component_name,
+            "method": "do_command",
+            "args": [{"command": "water_manual"}],
+        }
+
+    def _feed_key_config(self) -> dict:
+        return {
+            "text": "Feed",
+            "color": "",
+            "text_color": "",
+            "component": self._component_name,
+            "method": "do_command",
+            "args": [{"command": "feed_now"}],
+        }
+
+    def _thermostat_key_config(self) -> dict:
+        # Label shows the ACTION (what pressing does), not the current state.
+        on = bool(self._thermostat_on)
+        target_on = not on
+        return {
+            "text": "Thermostat ON" if target_on else "Thermostat OFF",
+            "color": "green" if target_on else "",
+            "text_color": "white" if target_on else "",
+            "component": self._component_name,
+            "method": "do_command",
+            "args": [{"command": "thermostat_toggle"}],
+        }

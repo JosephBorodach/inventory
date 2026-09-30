@@ -14,13 +14,14 @@ from typing import Any, ClassVar
 
 from viam.components.generic import Generic
 from viam.components.sensor import Sensor
-from viam.components.switch import Switch
 from viam.proto.app.robot import ComponentConfig
 from viam.proto.common import ResourceName
 from viam.resource.base import ResourceBase
 from viam.resource.types import Model, ModelFamily
 from viam.services.generic import Generic as GenericService
 from viam.utils import struct_to_dict
+
+from .dispatcher import HomeActionDispatcher
 
 LOGGER = logging.getLogger(__name__)
 
@@ -31,12 +32,6 @@ DEFAULT_FOCUS_TIMEOUT_SEC = 60.0
 FOCUS_MINUS_SLOT = 6
 FOCUS_ITEM_SLOT = 7
 FOCUS_PLUS_SLOT = 8
-# Reserved slots on the deck are counted back from the end so they always
-# land on the bottom-right regardless of deck size: water, feed, thermostat.
-RESERVED_WATER_OFFSET = 3
-RESERVED_FEED_OFFSET = 2
-RESERVED_THERMOSTAT_OFFSET = 1
-DEFAULT_MANUAL_WATER_ML = 50
 DECK_TEXT_FONT = "NotoEmoji-Regular.ttf"
 SCHEMA_VERSION = 1
 
@@ -220,14 +215,7 @@ class Tracker(Generic):
         self._focus_item_id: str | None = None
         self._focus_timeout_sec: float = DEFAULT_FOCUS_TIMEOUT_SEC
         self._focus_timer_task: asyncio.Task | None = None
-        self._waterer: GenericService | None = None
-        self._waterer_name: str = ""
-        self._feeder: GenericService | None = None
-        self._feeder_name: str = ""
-        self._thermostat_switch: Switch | None = None
-        self._thermostat_switch_name: str = ""
-        self._manual_water_ml: int = DEFAULT_MANUAL_WATER_ML
-        self._thermostat_on: bool | None = None
+        self._dispatcher = HomeActionDispatcher(self.name)
 
     @classmethod
     def new(
@@ -268,19 +256,7 @@ class Tracker(Generic):
             or deck_key_count <= 0
         ):
             raise ValueError("`deck_key_count` must be a positive integer")
-        for key in ("waterer", "feeder", "thermostat_switch"):
-            val = attrs.get(key)
-            if val is not None:
-                if not isinstance(val, str) or not val:
-                    raise ValueError(f"`{key}` must be a non-empty string")
-                optional.append(val)
-        manual_water_ml = attrs.get("manual_water_ml")
-        if manual_water_ml is not None and (
-            isinstance(manual_water_ml, bool)
-            or not isinstance(manual_water_ml, int | float)
-            or manual_water_ml <= 0
-        ):
-            raise ValueError("`manual_water_ml` must be a positive integer")
+        optional.extend(HomeActionDispatcher.validate_config_attrs(attrs))
         return required, optional
 
     def reconfigure(
@@ -294,17 +270,10 @@ class Tracker(Generic):
         self._streamdeck_name = str(attrs.get("streamdeck") or "")
         self._deck_key_count = int(attrs.get("deck_key_count") or DEFAULT_DECK_KEY_COUNT)
         self._state_path = str(attrs.get("state_path") or DEFAULT_STATE_PATH)
-        self._waterer_name = str(attrs.get("waterer") or "")
-        self._feeder_name = str(attrs.get("feeder") or "")
-        self._thermostat_switch_name = str(attrs.get("thermostat_switch") or "")
-        self._manual_water_ml = int(attrs.get("manual_water_ml") or DEFAULT_MANUAL_WATER_ML)
 
         self._state_sensor = None
         self._events_sensor = None
         self._streamdeck = None
-        self._waterer = None
-        self._feeder = None
-        self._thermostat_switch = None
         for name, resource in dependencies.items():
             if name.name == self._state_sensor_name and isinstance(resource, Sensor):
                 self._state_sensor = resource
@@ -320,26 +289,6 @@ class Tracker(Generic):
                 and isinstance(resource, GenericService)
             ):
                 self._streamdeck = resource
-            elif (
-                self._waterer_name
-                and name.name == self._waterer_name
-                # Waterer/feeder can be either a Generic *component* or a
-                # Generic *service* — most existing modules ship as components.
-                and isinstance(resource, Generic | GenericService)
-            ):
-                self._waterer = resource
-            elif (
-                self._feeder_name
-                and name.name == self._feeder_name
-                and isinstance(resource, Generic | GenericService)
-            ):
-                self._feeder = resource
-            elif (
-                self._thermostat_switch_name
-                and name.name == self._thermostat_switch_name
-                and isinstance(resource, Switch)
-            ):
-                self._thermostat_switch = resource
         if self._state_sensor is None:
             raise RuntimeError(f"state_sensor {self._state_sensor_name!r} not found")
         if self._events_sensor_name and self._events_sensor is None:
@@ -352,24 +301,7 @@ class Tracker(Generic):
                 "streamdeck %r not found among dependencies; deck fanout disabled",
                 self._streamdeck_name,
             )
-        if self._waterer_name and self._waterer is None:
-            LOGGER.warning(
-                "waterer %r not resolved (need Generic component or service); "
-                "reserved water key disabled",
-                self._waterer_name,
-            )
-        if self._feeder_name and self._feeder is None:
-            LOGGER.warning(
-                "feeder %r not resolved (need Generic component or service); "
-                "reserved feed key disabled",
-                self._feeder_name,
-            )
-        if self._thermostat_switch_name and self._thermostat_switch is None:
-            LOGGER.warning(
-                "thermostat_switch %r not resolved (need Switch component); "
-                "reserved thermostat key disabled",
-                self._thermostat_switch_name,
-            )
+        self._dispatcher.reconfigure(attrs, dependencies)
 
         self._state = self._load_state()
 
@@ -462,7 +394,7 @@ class Tracker(Generic):
         return None
 
     def _reject_reserved_slot(self, slot: int) -> None:
-        reserved = self._reserved_slot_map()
+        reserved = self._dispatcher.reserved_slot_map(self._deck_key_count)
         if slot in reserved:
             raise ValueError(
                 f"deck slot {slot} is reserved for {reserved[slot]}; pick another slot"
@@ -754,73 +686,16 @@ class Tracker(Generic):
         keys[str(item_slot)] = self._focus_item_key(item)
         return keys
 
-    def _reserved_slot_map(self) -> dict[int, str]:
-        # Reserved slots count back from the end so they always sit on the
-        # bottom-right of any deck size. Each slot is only reserved when
-        # its dep is actually configured — otherwise the slot stays
-        # available for inventory items.
-        reserved: dict[int, str] = {}
-        n = self._deck_key_count
-        if self._waterer is not None:
-            reserved[n - RESERVED_WATER_OFFSET] = "water"
-        if self._feeder is not None:
-            reserved[n - RESERVED_FEED_OFFSET] = "feed"
-        if self._thermostat_switch is not None:
-            reserved[n - RESERVED_THERMOSTAT_OFFSET] = "thermostat"
-        return reserved
-
-    def _water_key_config(self) -> dict:
-        return {
-            "text": f"Water {self._manual_water_ml}ml",
-            "color": "",
-            "text_color": "",
-            "component": self.name,
-            "method": "do_command",
-            "args": [{"command": "water_manual"}],
-        }
-
-    def _feed_key_config(self) -> dict:
-        return {
-            "text": "Feed",
-            "color": "",
-            "text_color": "",
-            "component": self.name,
-            "method": "do_command",
-            "args": [{"command": "feed_now"}],
-        }
-
-    def _thermostat_key_config(self) -> dict:
-        # Label + color show the ACTION (what pressing will do), not the
-        # current state. If it's currently on, the button says "Thermostat
-        # OFF" (dark) — press to turn it off. If off, says "Thermostat ON"
-        # (green) — press to turn it on.
-        on = bool(self._thermostat_on)
-        target_on = not on
-        return {
-            "text": "Thermostat ON" if target_on else "Thermostat OFF",
-            "color": "green" if target_on else "",
-            "text_color": "white" if target_on else "",
-            "component": self.name,
-            "method": "do_command",
-            "args": [{"command": "thermostat_toggle"}],
-        }
-
-    def _reserved_slot_config(self, kind: str) -> dict:
-        if kind == "water":
-            return self._water_key_config()
-        if kind == "feed":
-            return self._feed_key_config()
-        if kind == "thermostat":
-            return self._thermostat_key_config()
-        return self._empty_slot_config()
-
     def _main_deck_keys(self) -> dict[str, dict]:
         slotted = self._slotted_items_on_page(0)
-        reserved = self._reserved_slot_map()
+        reserved = self._dispatcher.reserved_slot_map(self._deck_key_count)
         keys: dict[str, dict] = {}
         for slot in range(self._deck_key_count):
             if slot in reserved:
-                keys[str(slot)] = self._reserved_slot_config(reserved[slot])
+                keys[str(slot)] = (
+                    self._dispatcher.reserved_slot_config(reserved[slot])
+                    or self._empty_slot_config()
+                )
                 continue
             item = slotted.get(slot)
             if item is not None:
@@ -840,7 +715,7 @@ class Tracker(Generic):
         if focused is None:
             # Only refresh thermostat state for the main layout — the
             # focus layout doesn't show reserved keys.
-            await self._refresh_thermostat_state()
+            await self._dispatcher.refresh_thermostat_state()
         keys = self._focus_deck_keys(focused) if focused is not None else self._main_deck_keys()
         try:
             await self._streamdeck.do_command({"update_display": {"keys": keys}})
@@ -865,40 +740,12 @@ class Tracker(Generic):
         self._focus_item_id = None
         await self._push_full_deck_layout()
 
-    async def _refresh_thermostat_state(self) -> None:
-        if self._thermostat_switch is None:
-            self._thermostat_on = None
-            return
-        try:
-            pos = await self._thermostat_switch.get_position()
-        except Exception as e:
-            LOGGER.warning("thermostat state read failed: %s", e)
-            return
-        self._thermostat_on = pos == 1
-
-    async def _water_manual(self, _payload: Any) -> dict:
-        if self._waterer is None:
-            raise RuntimeError("no waterer configured")
-        return await self._waterer.do_command(
-            {"command": "dispense_ml", "ml": self._manual_water_ml}
-        )
-
-    async def _feed_now(self, _payload: Any) -> dict:
-        if self._feeder is None:
-            raise RuntimeError("no feeder configured")
-        return await self._feeder.do_command({"command": "feed_now"})
-
-    async def _thermostat_toggle(self, _payload: Any) -> dict:
-        if self._thermostat_switch is None:
-            raise RuntimeError("no thermostat_switch configured")
-        pos = await self._thermostat_switch.get_position()
-        new_pos = 0 if pos == 1 else 1
-        await self._thermostat_switch.set_position(new_pos)
-        self._thermostat_on = new_pos == 1
-        # Re-push the layout so the label flips right away instead of
-        # waiting for the next 30s deck refresh cycle.
+    async def _thermostat_toggle_and_repaint(self, payload: Any) -> dict:
+        result = await self._dispatcher.thermostat_toggle(payload)
+        # Repaint so the label flips right away instead of waiting for the
+        # next 30s deck refresh cycle.
         await self._push_full_deck_layout()
-        return {"ok": True, "position": new_pos}
+        return result
 
     async def _focus_step(self, payload: Any) -> dict:
         if not isinstance(payload, dict):
@@ -1098,11 +945,11 @@ class Tracker(Generic):
         if verb == "focus_step":
             return await self._focus_step(command)
         if verb == "water_manual":
-            return await self._water_manual(command)
+            return await self._dispatcher.water_manual(command)
         if verb == "feed_now":
-            return await self._feed_now(command)
+            return await self._dispatcher.feed_now(command)
         if verb == "thermostat_toggle":
-            return await self._thermostat_toggle(command)
+            return await self._thermostat_toggle_and_repaint(command)
         if verb == "lookup_barcode":
             return await self._lookup_barcode(command)
         if verb == "scan_barcode":
