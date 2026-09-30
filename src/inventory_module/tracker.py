@@ -77,16 +77,20 @@ def _optional_non_neg_int(field: str, value: Any) -> int | None:
     )
 
 
-def _validate_deck_pair(page: Any, slot: Any, deck_key_count: int) -> tuple[int | None, int | None]:
-    p = _optional_non_neg_int("deck_page", page)
-    s = _optional_non_neg_int("deck_slot", slot)
-    if (p is None) != (s is None):
-        raise ValueError("`deck_page` and `deck_slot` must be provided together or both null")
-    if p is not None and p != 0:
-        raise ValueError("`deck_page` must be 0 in v1; multi-page not yet supported")
-    if s is not None and s >= deck_key_count:
-        raise ValueError(f"`deck_slot` must be 0..{deck_key_count - 1}")
-    return p, s
+def _validate_button(value: Any, devices: dict[str, int]) -> dict | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("`button` must be an object with `device` and `slot`")
+    device = _coerce_stripped_string("button.device", value.get("device"))
+    if device not in devices:
+        raise ValueError(
+            f"`button.device` {device!r} is not declared; known devices: {sorted(devices)}"
+        )
+    slot = _coerce_int("button.slot", value.get("slot"), min_value=0)
+    if slot >= devices[device]:
+        raise ValueError(f"`button.slot` must be 0..{devices[device] - 1} for device {device!r}")
+    return {"device": device, "slot": slot}
 
 
 def _validate_barcode(value: Any) -> str | None:
@@ -116,6 +120,36 @@ def _validate_image(value: Any) -> str | None:
     return _coerce_stripped_string("image", value, err_msg="`image` must be a string or null")
 
 
+def _parse_devices(attrs: dict) -> list[dict]:
+    raw = attrs.get("devices")
+    if raw is None:
+        streamdeck = attrs.get("streamdeck")
+        if not streamdeck:
+            return []
+        return [
+            {
+                "name": "kitchen",
+                "streamdeck": _coerce_stripped_string("streamdeck", streamdeck),
+                "key_count": int(attrs.get("deck_key_count") or 15),
+            }
+        ]
+    if not isinstance(raw, list):
+        raise ValueError("`devices` must be a list")
+    out: list[dict] = []
+    seen: set[str] = set()
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise ValueError("each entry in `devices` must be an object")
+        name = _coerce_stripped_string("devices[].name", entry.get("name"))
+        if name in seen:
+            raise ValueError(f"duplicate device name {name!r}")
+        seen.add(name)
+        streamdeck = _coerce_stripped_string("devices[].streamdeck", entry.get("streamdeck"))
+        key_count = _require_positive_int("devices[].key_count", entry.get("key_count"))
+        out.append({"name": name, "streamdeck": streamdeck, "key_count": key_count})
+    return out
+
+
 class Tracker(Generic):
     MODEL: ClassVar[Model] = Model(ModelFamily("joseph", "inventory"), "tracker")
 
@@ -131,6 +165,7 @@ class Tracker(Generic):
         # while a mutation might be holding it would break serialization.
         self._state_lock: asyncio.Lock = asyncio.Lock()
         self._boot_task: asyncio.Task | None = None
+        self._devices: list[dict] = []
         self._dispatcher = HomeActionDispatcher(self.name)
         self._deck = DeckRenderer(
             self.name, lambda: self._state["items"], self._find_item, self._dispatcher
@@ -168,6 +203,9 @@ class Tracker(Generic):
             required.append(events_sensor)
         optional.extend(DeckRenderer.validate_config_attrs(attrs))
         optional.extend(HomeActionDispatcher.validate_config_attrs(attrs))
+        for d in _parse_devices(attrs):
+            if d["streamdeck"] not in optional:
+                optional.append(d["streamdeck"])
         return required, optional
 
     def reconfigure(
@@ -198,10 +236,12 @@ class Tracker(Generic):
                 "events_sensor %r not found among dependencies; change events will not be pushed",
                 self._events_sensor_name,
             )
+        self._devices = _parse_devices(attrs)
         self._dispatcher.reconfigure(attrs, dependencies)
         self._deck.reconfigure(attrs, dependencies)
 
         self._state = self._load_state()
+        self._migrate_items()
 
         if self._boot_task and not self._boot_task.done():
             self._boot_task.cancel()
@@ -275,20 +315,46 @@ class Tracker(Generic):
     def _snapshot_items(self) -> list[dict]:
         return [dict(item) for item in self._state["items"]]
 
-    def _slot_owner(self, page: int | None, slot: int | None) -> dict | None:
-        if page is None or slot is None:
+    def _devices_map(self) -> dict[str, int]:
+        return {d["name"]: d["key_count"] for d in self._devices}
+
+    def _button_owner(self, button: dict | None) -> dict | None:
+        if button is None:
             return None
         for item in self._state["items"]:
-            if item.get("deck_page") == page and item.get("deck_slot") == slot:
+            b = item.get("button")
+            if b and b.get("device") == button["device"] and b.get("slot") == button["slot"]:
                 return item
         return None
 
-    def _reject_reserved_slot(self, slot: int) -> None:
-        reserved = self._dispatcher.reserved_slot_map(self._deck.key_count)
-        if slot in reserved:
+    def _reject_reserved_button(self, button: dict) -> None:
+        reserved = self._dispatcher.reserved_slot_map_for(
+            button["device"], self._devices_map().get(button["device"], 0)
+        )
+        if button["slot"] in reserved:
             raise ValueError(
-                f"deck slot {slot} is reserved for {reserved[slot]}; pick another slot"
+                f"deck slot {button['slot']} is reserved for {reserved[button['slot']]}; "
+                f"pick another slot"
             )
+
+    def _migrate_items(self) -> None:
+        # One-time: rewrite legacy deck_page/deck_slot into button {device, slot}.
+        # Only migrates when the "kitchen" device is declared (the sole pre-multi-device option).
+        dirty = False
+        for item in self._state["items"]:
+            if "button" in item:
+                continue
+            legacy_slot = item.get("deck_slot")
+            legacy_page = item.get("deck_page")
+            if legacy_slot is not None and legacy_page == 0 and "kitchen" in self._devices_map():
+                item["button"] = {"device": "kitchen", "slot": int(legacy_slot)}
+            else:
+                item["button"] = None
+            item.pop("deck_page", None)
+            item.pop("deck_slot", None)
+            dirty = True
+        if dirty:
+            self._save_state()
 
     def _find_item_by_barcode(self, barcode: str) -> dict | None:
         for item in self._state["items"]:
@@ -305,15 +371,11 @@ class Tracker(Generic):
         package_qty = _require_positive_int("package_qty", payload.get("package_qty"))
         raw_icon = payload.get("icon")
         icon = _require_non_empty_string("icon", raw_icon) if raw_icon not in (None, "") else ""
-        deck_page, deck_slot = _validate_deck_pair(
-            payload.get("deck_page"), payload.get("deck_slot"), self._deck.key_count
-        )
-        if deck_slot is not None and self._slot_owner(deck_page, deck_slot) is not None:
-            raise ValueError(
-                f"deck slot page={deck_page} slot={deck_slot} is already assigned to another item"
-            )
-        if deck_slot is not None:
-            self._reject_reserved_slot(deck_slot)
+        button = _validate_button(payload.get("button"), self._devices_map())
+        if button is not None:
+            if self._button_owner(button) is not None:
+                raise ValueError(f"button {button} is already assigned to another item")
+            self._reject_reserved_button(button)
         barcode = _validate_barcode(payload.get("barcode"))
         image = _validate_image(payload.get("image"))
         threshold = _validate_threshold(payload.get("threshold"))
@@ -327,8 +389,7 @@ class Tracker(Generic):
             "icon": icon,
             "image": image,
             "threshold": threshold,
-            "deck_page": deck_page,
-            "deck_slot": deck_slot,
+            "button": button,
             "created_at": now,
             "updated_at": now,
         }
@@ -348,19 +409,13 @@ class Tracker(Generic):
         item_id = str(payload["id"])
         async with self._state_lock:
             item = self._require_item(item_id)
-            new_deck_page = payload["deck_page"] if "deck_page" in payload else item["deck_page"]
-            new_deck_slot = payload["deck_slot"] if "deck_slot" in payload else item["deck_slot"]
-            deck_page, deck_slot = _validate_deck_pair(
-                new_deck_page, new_deck_slot, self._deck.key_count
-            )
-            if deck_slot is not None:
-                owner = self._slot_owner(deck_page, deck_slot)
+            new_button = payload["button"] if "button" in payload else item.get("button")
+            button = _validate_button(new_button, self._devices_map())
+            if button is not None:
+                owner = self._button_owner(button)
                 if owner is not None and owner.get("id") != item_id:
-                    raise ValueError(
-                        f"deck slot page={deck_page} slot={deck_slot} is already "
-                        f"assigned to another item"
-                    )
-                self._reject_reserved_slot(deck_slot)
+                    raise ValueError(f"button {button} is already assigned to another item")
+                self._reject_reserved_button(button)
             if "name" in payload:
                 item["name"] = _require_non_empty_string("name", payload["name"])
             if "package_qty" in payload:
@@ -378,8 +433,7 @@ class Tracker(Generic):
                 item["image"] = _validate_image(payload["image"])
             if "threshold" in payload:
                 item["threshold"] = _validate_threshold(payload["threshold"])
-            item["deck_page"] = deck_page
-            item["deck_slot"] = deck_slot
+            item["button"] = button
             item["updated_at"] = _now_iso()
             snapshot = dict(item)
             self._save_state()
@@ -502,24 +556,24 @@ class Tracker(Generic):
         return result
 
     async def _reorder_deck(self, payload: Any) -> dict:
-        # Atomic slot reassignment. Given an ordered list of item IDs, assign
-        # slots 0..N-1 to them and clear deck_page/deck_slot on any items
-        # that were previously on this page but are absent from `order` (so
-        # dragging an item OUT of the deck section works too). We do this in
-        # one lock so we can't hit spurious slot-collision errors mid-reorder
-        # the way sequential edit_item calls would.
+        # Atomic slot reassignment for one device. Ordered list of item ids
+        # is assigned slots 0..N-1; items previously on this device but
+        # absent from `order` get their button cleared. One lock so we
+        # don't hit spurious slot-collision errors mid-reorder.
         if not isinstance(payload, dict):
             raise ValueError("payload must be an object")
-        page_raw = payload.get("page", 0)
-        page = _optional_non_neg_int("page", page_raw) or 0
-        if page != 0:
-            raise ValueError("`page` must be 0 in v1; multi-page not yet supported")
+        devices = self._devices_map()
+        device = payload.get("device") or "kitchen"
+        device = _coerce_stripped_string("device", device)
+        if device not in devices:
+            raise ValueError(f"device {device!r} is not declared; known devices: {sorted(devices)}")
+        key_count = devices[device]
         order = payload.get("order")
         if not isinstance(order, list):
             raise ValueError("`order` must be a list of item ids")
-        if len(order) > self._deck.key_count:
+        if len(order) > key_count:
             raise ValueError(
-                f"`order` has {len(order)} ids but deck only has {self._deck.key_count} keys"
+                f"`order` has {len(order)} ids but device {device!r} only has {key_count} keys"
             )
         if len(set(order)) != len(order):
             raise ValueError("`order` contains duplicate ids")
@@ -531,14 +585,13 @@ class Tracker(Generic):
             keep = set(order)
             now = _now_iso()
             for item in self._state["items"]:
-                if item.get("deck_page") == page and item.get("id") not in keep:
-                    item["deck_page"] = None
-                    item["deck_slot"] = None
+                b = item.get("button")
+                if b and b.get("device") == device and item.get("id") not in keep:
+                    item["button"] = None
                     item["updated_at"] = now
             for slot, item_id in enumerate(order):
                 item = self._require_item(item_id)
-                item["deck_page"] = page
-                item["deck_slot"] = slot
+                item["button"] = {"device": device, "slot": slot}
                 item["updated_at"] = now
             self._save_state()
         await self._push_state_snapshot()

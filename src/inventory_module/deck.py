@@ -159,13 +159,14 @@ class DeckRenderer:
         self._focus_item_id = None
         await self.push_layout()
 
-    def _slotted_items(self, page: int = 0) -> dict[int, dict]:
+    def _slotted_items(self, device: str = "kitchen") -> dict[int, dict]:
         out: dict[int, dict] = {}
         for item in self._items_getter():
-            slot = item.get("deck_slot")
-            if slot is None or item.get("deck_page") != page:
+            b = item.get("button")
+            if not b or b.get("device") != device:
                 continue
-            if 0 <= slot < self._deck_key_count:
+            slot = b.get("slot")
+            if isinstance(slot, int) and 0 <= slot < self._deck_key_count:
                 out[slot] = item
         return out
 
@@ -213,7 +214,7 @@ class DeckRenderer:
         return cfg
 
     def _main_layout(self) -> dict[str, dict]:
-        slotted = self._slotted_items(0)
+        slotted = self._slotted_items("kitchen")
         reserved = self._dispatcher.reserved_slot_map(self._deck_key_count)
         keys: dict[str, dict] = {}
         for slot in range(self._deck_key_count):
