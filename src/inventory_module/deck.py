@@ -19,6 +19,7 @@ DEFAULT_DECK_KEY_COUNT = 15
 DEFAULT_DECK_REFRESH_SEC = 30
 DEFAULT_FOCUS_TIMEOUT_SEC = 60.0
 FOCUS_ITEM_SLOT = 7
+MUSIC_FOCUS_TIMEOUT_SEC = 60.0  # TECH DEBT — see dispatcher.py top-of-file banner.
 
 
 def validate_deck_key_count(attrs: dict) -> None:
@@ -49,6 +50,9 @@ class DeckRenderer:
         self._focus_item_id: str | None = None
         self._focus_timeout_sec: float = DEFAULT_FOCUS_TIMEOUT_SEC
         self._focus_timer_task: asyncio.Task | None = None
+        # TECH DEBT — see dispatcher.py top-of-file banner.
+        self._music_focused: bool = False
+        self._music_focus_timer_task: asyncio.Task | None = None
 
     @staticmethod
     def validate_config_attrs(attrs: dict) -> list[str]:
@@ -109,11 +113,18 @@ class DeckRenderer:
         if focused is None and self._focus_item_id is not None:
             self._focus_item_id = None
             self._cancel_focus_timer()
-        if focused is None:
+        # TECH DEBT — see dispatcher.py top-of-file banner.
+        if self._music_focused and focused is not None:
+            self._exit_music_focus()
+        if focused is None and not self._music_focused:
             await self._dispatcher.refresh_thermostat_state()
-            # TECH DEBT — see dispatcher.py top-of-file banner.
             await self._dispatcher.refresh_music_state()
-        keys = self._focus_layout(focused) if focused is not None else self._main_layout()
+        if focused is not None:
+            keys = self._focus_layout(focused)
+        elif self._music_focused:
+            keys = self._music_focus_layout()
+        else:
+            keys = self._main_layout()
         try:
             await self._streamdeck.do_command({"update_display": {"keys": keys}})
         except Exception as e:
@@ -129,8 +140,31 @@ class DeckRenderer:
         await self.push_layout()
         return self._focus_item_id
 
+    # TECH DEBT — see dispatcher.py top-of-file banner.
+    async def enter_music_focus(self) -> None:
+        self._focus_item_id = None
+        self._cancel_focus_timer()
+        self._music_focused = True
+        self._arm_music_focus_timer()
+        await self.push_layout()
+
+    # TECH DEBT — see dispatcher.py top-of-file banner.
+    async def exit_music_focus(self) -> None:
+        self._exit_music_focus()
+        await self.push_layout()
+
+    # TECH DEBT — see dispatcher.py top-of-file banner.
+    def _exit_music_focus(self) -> None:
+        self._music_focused = False
+        self._cancel_music_focus_timer()
+
     def rearm_focus_timer(self) -> None:
         self._arm_focus_timer()
+
+    # TECH DEBT — see dispatcher.py top-of-file banner.
+    def rearm_music_focus_timer(self) -> None:
+        if self._music_focused:
+            self._arm_music_focus_timer()
 
     async def _deck_refresh_loop(self) -> None:
         # Viam doesn't reliably re-fire reconfigure when an optional dep
@@ -161,6 +195,36 @@ class DeckRenderer:
             return
         self._focus_item_id = None
         await self.push_layout()
+
+    # TECH DEBT — see dispatcher.py top-of-file banner.
+    def _cancel_music_focus_timer(self) -> None:
+        if self._music_focus_timer_task and not self._music_focus_timer_task.done():
+            self._music_focus_timer_task.cancel()
+        self._music_focus_timer_task = None
+
+    # TECH DEBT — see dispatcher.py top-of-file banner.
+    def _arm_music_focus_timer(self) -> None:
+        self._cancel_music_focus_timer()
+        with contextlib.suppress(RuntimeError):
+            self._music_focus_timer_task = asyncio.create_task(self._music_focus_timeout_loop())
+
+    # TECH DEBT — see dispatcher.py top-of-file banner.
+    async def _music_focus_timeout_loop(self) -> None:
+        try:
+            await asyncio.sleep(MUSIC_FOCUS_TIMEOUT_SEC)
+        except asyncio.CancelledError:
+            return
+        self._music_focused = False
+        await self.push_layout()
+
+    # TECH DEBT — see dispatcher.py top-of-file banner.
+    def _music_focus_layout(self) -> dict[str, dict]:
+        keys: dict[str, dict] = {}
+        for slot in range(self._deck_key_count):
+            keys[str(slot)] = self._empty_slot()
+        for slot, cfg in self._dispatcher.music_focus_key_configs(self._deck_key_count).items():
+            keys[str(slot)] = cfg
+        return keys
 
     def _slotted_items(self, device: str = "kitchen") -> dict[int, dict]:
         out: dict[int, dict] = {}

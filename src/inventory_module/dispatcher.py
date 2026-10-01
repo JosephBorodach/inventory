@@ -200,6 +200,24 @@ class HomeActionDispatcher:
         return await self.music_play(payload)
 
     # TECH DEBT — see top of file.
+    async def music_volume_up(self, _payload: Any) -> dict:
+        if self._music is None:
+            raise RuntimeError("no music component configured")
+        return await self._music.do_command({"command": "volume_up"})
+
+    # TECH DEBT — see top of file.
+    async def music_volume_down(self, _payload: Any) -> dict:
+        if self._music is None:
+            raise RuntimeError("no music component configured")
+        return await self._music.do_command({"command": "volume_down"})
+
+    # TECH DEBT — see top of file.
+    async def music_next(self, _payload: Any) -> dict:
+        if self._music is None:
+            raise RuntimeError("no music component configured")
+        return await self._music.do_command({"command": "next"})
+
+    # TECH DEBT — see top of file.
     async def refresh_music_state(self) -> None:
         if self._music is None:
             self._music_playing = None
@@ -295,14 +313,64 @@ class HomeActionDispatcher:
 
     # TECH DEBT — see top of file.
     def _music_key_config(self) -> dict:
-        # Label shows the action, not the current state (matches thermostat).
-        playing = bool(self._music_playing)
-        target_play = not playing
+        # Tapping opens a focus "drawer" with Back / - / Play-Stop / + / Next.
         return {
-            "text": "Music play" if target_play else "Music stop",
-            "color": "green" if target_play else "red",
-            "text_color": "white",
+            "text": "Music",
+            "color": "",
+            "text_color": "",
             "component": self._component_name,
             "method": "do_command",
-            "args": [{"command": "music_toggle"}],
+            "args": [{"command": "music_focus_enter"}],
+        }
+
+    # TECH DEBT — see top of file.
+    def music_focus_key_configs(self, deck_key_count: int) -> dict[int, dict]:
+        # Center row of a 15-key deck is slots 5-9. On smaller decks, fall back
+        # to the top-left 5 slots.
+        base = 5 if deck_key_count >= 15 else 0
+        playing = bool(self._music_playing)
+        toggle_target_play = not playing
+        toggle_text = "Play" if toggle_target_play else "Stop"
+        toggle_color = "green" if toggle_target_play else "red"
+        return {
+            base + 0: {
+                "text": "Back",
+                "color": "",
+                "text_color": "",
+                "component": self._component_name,
+                "method": "do_command",
+                "args": [{"command": "music_focus_exit"}],
+            },
+            base + 1: {
+                "text": "−",
+                "color": "",
+                "text_color": "",
+                "component": self._component_name,
+                "method": "do_command",
+                "args": [{"command": "music_volume_down"}],
+            },
+            base + 2: {
+                "text": toggle_text,
+                "color": toggle_color,
+                "text_color": "white",
+                "component": self._component_name,
+                "method": "do_command",
+                "args": [{"command": "music_toggle"}],
+            },
+            base + 3: {
+                "text": "+",
+                "color": "",
+                "text_color": "",
+                "component": self._component_name,
+                "method": "do_command",
+                "args": [{"command": "music_volume_up"}],
+            },
+            base + 4: {
+                "text": "Next",
+                "color": "",
+                "text_color": "",
+                "component": self._component_name,
+                "method": "do_command",
+                "args": [{"command": "music_next"}],
+            },
         }

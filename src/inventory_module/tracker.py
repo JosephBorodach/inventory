@@ -660,7 +660,36 @@ class Tracker(Generic):
     # TECH DEBT — see dispatcher.py top-of-file banner.
     async def _music_toggle_and_repaint(self, payload: Any) -> dict:
         result = await self._dispatcher.music_toggle(payload)
+        self._deck.rearm_music_focus_timer()
         await self._deck.push_layout()
+        return result
+
+    # TECH DEBT — see dispatcher.py top-of-file banner.
+    async def _music_focus_enter(self, _payload: Any) -> dict:
+        await self._deck.enter_music_focus()
+        return {"ok": True}
+
+    # TECH DEBT — see dispatcher.py top-of-file banner.
+    async def _music_focus_exit(self, _payload: Any) -> dict:
+        await self._deck.exit_music_focus()
+        return {"ok": True}
+
+    # TECH DEBT — see dispatcher.py top-of-file banner.
+    async def _music_volume_up(self, payload: Any) -> dict:
+        result = await self._dispatcher.music_volume_up(payload)
+        self._deck.rearm_music_focus_timer()
+        return result
+
+    # TECH DEBT — see dispatcher.py top-of-file banner.
+    async def _music_volume_down(self, payload: Any) -> dict:
+        result = await self._dispatcher.music_volume_down(payload)
+        self._deck.rearm_music_focus_timer()
+        return result
+
+    # TECH DEBT — see dispatcher.py top-of-file banner.
+    async def _music_next(self, payload: Any) -> dict:
+        result = await self._dispatcher.music_next(payload)
+        self._deck.rearm_music_focus_timer()
         return result
 
     async def _focus_step(self, payload: Any) -> dict:
@@ -817,6 +846,16 @@ class Tracker(Generic):
             return await self._music_stop_and_repaint(command)
         if verb == "music_toggle":
             return await self._music_toggle_and_repaint(command)
+        if verb == "music_focus_enter":
+            return await self._music_focus_enter(command)
+        if verb == "music_focus_exit":
+            return await self._music_focus_exit(command)
+        if verb == "music_volume_up":
+            return await self._music_volume_up(command)
+        if verb == "music_volume_down":
+            return await self._music_volume_down(command)
+        if verb == "music_next":
+            return await self._music_next(command)
         if verb == "lookup_barcode":
             return await self._barcode.lookup(command)
         if verb == "scan_barcode":
