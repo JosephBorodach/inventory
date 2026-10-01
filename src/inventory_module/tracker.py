@@ -247,8 +247,9 @@ class Tracker(Generic):
         optional.extend(DeckRenderer.validate_config_attrs(attrs))
         optional.extend(HomeActionDispatcher.validate_config_attrs(attrs))
         for d in _parse_devices(attrs):
-            if d["streamdeck"] not in optional:
-                optional.append(d["streamdeck"])
+            sd = d["streamdeck"]
+            if sd and sd not in optional:
+                optional.append(sd)
         return required, optional
 
     def reconfigure(
