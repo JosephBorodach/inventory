@@ -14,6 +14,7 @@
 # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
 import logging
+import time
 from collections.abc import Mapping
 from typing import Any
 
@@ -29,6 +30,10 @@ RESERVED_WATER_OFFSET = 3
 RESERVED_FEED_OFFSET = 2
 RESERVED_THERMOSTAT_OFFSET = 1
 RESERVED_MUSIC_OFFSET = 4  # TECH DEBT — see top of file.
+# Spotify's GET /me/player lags ~1-2s behind PUT /me/player/{play,pause}.
+# Trust the optimistic post-mutation state for this long before letting a
+# background refresh overwrite it.
+MUSIC_STATE_MUTATION_COOLDOWN_SEC = 10.0
 DEFAULT_MANUAL_WATER_ML = 50
 
 
@@ -45,6 +50,7 @@ class HomeActionDispatcher:
         self._music: GenericService | None = None
         self._music_name: str = ""
         self._music_playing: bool | None = None
+        self._music_last_mutation_at: float = 0.0
         self._manual_water_ml: int = DEFAULT_MANUAL_WATER_ML
         self._thermostat_on: bool | None = None
 
@@ -162,6 +168,7 @@ class HomeActionDispatcher:
             LOGGER.error("music_play failed: %s", e)
             raise
         self._music_playing = True
+        self._music_last_mutation_at = time.monotonic()
         LOGGER.info("music_play ok: %s", result)
         return result
 
@@ -176,6 +183,7 @@ class HomeActionDispatcher:
             LOGGER.error("music_stop failed: %s", e)
             raise
         self._music_playing = False
+        self._music_last_mutation_at = time.monotonic()
         LOGGER.info("music_stop ok: %s", result)
         return result
 
@@ -195,6 +203,11 @@ class HomeActionDispatcher:
     async def refresh_music_state(self) -> None:
         if self._music is None:
             self._music_playing = None
+            return
+        if (
+            time.monotonic() - self._music_last_mutation_at
+            < MUSIC_STATE_MUTATION_COOLDOWN_SEC
+        ):
             return
         try:
             status = await self._music.do_command({"command": "status"})
