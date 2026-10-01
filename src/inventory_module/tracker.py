@@ -77,7 +77,7 @@ def _optional_non_neg_int(field: str, value: Any) -> int | None:
     )
 
 
-def _validate_button(value: Any, devices: dict[str, int]) -> dict | None:
+def _validate_button(value: Any, devices: dict[str, int | None]) -> dict | None:
     if value is None:
         return None
     if not isinstance(value, dict):
@@ -88,8 +88,9 @@ def _validate_button(value: Any, devices: dict[str, int]) -> dict | None:
             f"`button.device` {device!r} is not declared; known devices: {sorted(devices)}"
         )
     slot = _coerce_int("button.slot", value.get("slot"), min_value=0)
-    if slot >= devices[device]:
-        raise ValueError(f"`button.slot` must be 0..{devices[device] - 1} for device {device!r}")
+    key_count = devices[device]
+    if key_count is not None and slot >= key_count:
+        raise ValueError(f"`button.slot` must be 0..{key_count - 1} for device {device!r}")
     return {"device": device, "slot": slot}
 
 
@@ -175,8 +176,19 @@ def _parse_devices(attrs: dict) -> list[dict]:
         if name in seen:
             raise ValueError(f"duplicate device name {name!r}")
         seen.add(name)
-        streamdeck = _coerce_stripped_string("devices[].streamdeck", entry.get("streamdeck"))
-        key_count = _require_positive_int("devices[].key_count", entry.get("key_count"))
+        # Virtual devices (grouping only, no physical Stream Deck) omit both.
+        streamdeck_raw = entry.get("streamdeck")
+        key_count_raw = entry.get("key_count")
+        if streamdeck_raw is None and key_count_raw is None:
+            out.append({"name": name, "streamdeck": None, "key_count": None})
+            continue
+        if streamdeck_raw is None or key_count_raw is None:
+            raise ValueError(
+                f"device {name!r}: `streamdeck` and `key_count` must both be set, "
+                "or both omitted for a virtual (grouping-only) device"
+            )
+        streamdeck = _coerce_stripped_string("devices[].streamdeck", streamdeck_raw)
+        key_count = _require_positive_int("devices[].key_count", key_count_raw)
         out.append({"name": name, "streamdeck": streamdeck, "key_count": key_count})
     return out
 
@@ -346,7 +358,7 @@ class Tracker(Generic):
     def _snapshot_items(self) -> list[dict]:
         return [dict(item) for item in self._state["items"]]
 
-    def _devices_map(self) -> dict[str, int]:
+    def _devices_map(self) -> dict[str, int | None]:
         return {d["name"]: d["key_count"] for d in self._devices}
 
     def _button_owner(self, button: dict | None) -> dict | None:
@@ -670,7 +682,7 @@ class Tracker(Generic):
         order = payload.get("order")
         if not isinstance(order, list):
             raise ValueError("`order` must be a list of item ids")
-        if len(order) > key_count:
+        if key_count is not None and len(order) > key_count:
             raise ValueError(
                 f"`order` has {len(order)} ids but device {device!r} only has {key_count} keys"
             )
