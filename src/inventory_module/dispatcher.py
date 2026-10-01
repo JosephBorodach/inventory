@@ -1,4 +1,17 @@
-"""Reserved streamdeck keys that fire waterer / feeder / thermostat commands."""
+"""Reserved streamdeck keys that fire waterer / feeder / thermostat / music commands."""
+
+# !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+# TECH DEBT — RIP OUT.
+# `music` has no business living in the inventory module. It's here because
+# the inventory tracker does full-layout pushes to the streamdeck and
+# clobbers any key it doesn't own, so a separate music module can't paint
+# its own keys on the same deck without inventory wiping them.
+# Proper fix: give the inventory tracker an `external_slots` escape hatch
+# (don't paint listed slot indices), then move music_play / music_stop /
+# music_component / _music_*_key_config into the joseph:spotify module and
+# have it paint its own keys. Delete every music_* mention from this file
+# and from tracker.py when that lands.
+# !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
 import logging
 from collections.abc import Mapping
@@ -15,6 +28,8 @@ LOGGER = logging.getLogger(__name__)
 RESERVED_WATER_OFFSET = 3
 RESERVED_FEED_OFFSET = 2
 RESERVED_THERMOSTAT_OFFSET = 1
+RESERVED_MUSIC_PLAY_OFFSET = 5  # TECH DEBT — see top of file.
+RESERVED_MUSIC_STOP_OFFSET = 4  # TECH DEBT — see top of file.
 DEFAULT_MANUAL_WATER_ML = 50
 
 
@@ -27,13 +42,17 @@ class HomeActionDispatcher:
         self._feeder_name: str = ""
         self._thermostat_switch: Switch | None = None
         self._thermostat_switch_name: str = ""
+        # TECH DEBT — see top of file.
+        self._music: GenericService | None = None
+        self._music_name: str = ""
         self._manual_water_ml: int = DEFAULT_MANUAL_WATER_ML
         self._thermostat_on: bool | None = None
 
     @staticmethod
     def validate_config_attrs(attrs: dict) -> list[str]:
         optional: list[str] = []
-        for key in ("waterer", "feeder", "thermostat_switch"):
+        # `music` is TECH DEBT — see top of file.
+        for key in ("waterer", "feeder", "thermostat_switch", "music"):
             val = attrs.get(key)
             if val is not None:
                 if not isinstance(val, str) or not val:
@@ -52,11 +71,13 @@ class HomeActionDispatcher:
         self._waterer_name = str(attrs.get("waterer") or "")
         self._feeder_name = str(attrs.get("feeder") or "")
         self._thermostat_switch_name = str(attrs.get("thermostat_switch") or "")
+        self._music_name = str(attrs.get("music") or "")  # TECH DEBT — see top of file.
         self._manual_water_ml = int(attrs.get("manual_water_ml") or DEFAULT_MANUAL_WATER_ML)
 
         self._waterer = None
         self._feeder = None
         self._thermostat_switch = None
+        self._music = None  # TECH DEBT — see top of file.
         for name, resource in dependencies.items():
             if (
                 self._waterer_name
@@ -77,6 +98,12 @@ class HomeActionDispatcher:
                 and isinstance(resource, Switch)
             ):
                 self._thermostat_switch = resource
+            elif (
+                self._music_name
+                and name.name == self._music_name
+                and isinstance(resource, Generic | GenericService)
+            ):
+                self._music = resource
 
         if self._waterer_name and self._waterer is None:
             LOGGER.warning(
@@ -95,6 +122,12 @@ class HomeActionDispatcher:
                 "thermostat_switch %r not resolved (need Switch component); "
                 "reserved thermostat key disabled",
                 self._thermostat_switch_name,
+            )
+        if self._music_name and self._music is None:
+            LOGGER.warning(
+                "music %r not resolved (need Generic component or service); "
+                "reserved music keys disabled",
+                self._music_name,
             )
 
     async def water_manual(self, _payload: Any) -> dict:
@@ -118,6 +151,18 @@ class HomeActionDispatcher:
         self._thermostat_on = new_pos == 1
         return {"ok": True, "position": new_pos}
 
+    # TECH DEBT — see top of file.
+    async def music_play(self, _payload: Any) -> dict:
+        if self._music is None:
+            raise RuntimeError("no music component configured")
+        return await self._music.do_command({"command": "start"})
+
+    # TECH DEBT — see top of file.
+    async def music_stop(self, _payload: Any) -> dict:
+        if self._music is None:
+            raise RuntimeError("no music component configured")
+        return await self._music.do_command({"command": "stop"})
+
     async def refresh_thermostat_state(self) -> None:
         if self._thermostat_switch is None:
             self._thermostat_on = None
@@ -138,6 +183,10 @@ class HomeActionDispatcher:
             reserved[deck_key_count - RESERVED_FEED_OFFSET] = "feed"
         if self._thermostat_switch is not None:
             reserved[deck_key_count - RESERVED_THERMOSTAT_OFFSET] = "thermostat"
+        # TECH DEBT — see top of file.
+        if self._music is not None:
+            reserved[deck_key_count - RESERVED_MUSIC_PLAY_OFFSET] = "music_play"
+            reserved[deck_key_count - RESERVED_MUSIC_STOP_OFFSET] = "music_stop"
         return reserved
 
     def reserved_slot_map_for(self, device: str, key_count: int) -> dict[int, str]:
@@ -153,6 +202,11 @@ class HomeActionDispatcher:
             return self._feed_key_config()
         if kind == "thermostat":
             return self._thermostat_key_config()
+        # TECH DEBT — see top of file.
+        if kind == "music_play":
+            return self._music_play_key_config()
+        if kind == "music_stop":
+            return self._music_stop_key_config()
         return None
 
     def _water_key_config(self) -> dict:
@@ -186,4 +240,26 @@ class HomeActionDispatcher:
             "component": self._component_name,
             "method": "do_command",
             "args": [{"command": "thermostat_toggle"}],
+        }
+
+    # TECH DEBT — see top of file.
+    def _music_play_key_config(self) -> dict:
+        return {
+            "text": "Play",
+            "color": "green",
+            "text_color": "white",
+            "component": self._component_name,
+            "method": "do_command",
+            "args": [{"command": "music_play"}],
+        }
+
+    # TECH DEBT — see top of file.
+    def _music_stop_key_config(self) -> dict:
+        return {
+            "text": "Stop",
+            "color": "red",
+            "text_color": "white",
+            "component": self._component_name,
+            "method": "do_command",
+            "args": [{"command": "music_stop"}],
         }

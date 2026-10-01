@@ -791,6 +791,12 @@ class Tracker(Generic):
             return await self._dispatcher.feed_now(command)
         if verb == "thermostat_toggle":
             return await self._thermostat_toggle_and_repaint(command)
+        # TECH DEBT — music verbs live here only because inventory owns the deck.
+        # Move to joseph:spotify when per-component streamdeck ownership lands.
+        if verb == "music_play":
+            return await self._dispatcher.music_play(command)
+        if verb == "music_stop":
+            return await self._dispatcher.music_stop(command)
         if verb == "lookup_barcode":
             return await self._barcode.lookup(command)
         if verb == "scan_barcode":
