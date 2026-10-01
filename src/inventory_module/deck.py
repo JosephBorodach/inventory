@@ -111,6 +111,8 @@ class DeckRenderer:
             self._cancel_focus_timer()
         if focused is None:
             await self._dispatcher.refresh_thermostat_state()
+            # TECH DEBT — see dispatcher.py top-of-file banner.
+            await self._dispatcher.refresh_music_state()
         keys = self._focus_layout(focused) if focused is not None else self._main_layout()
         try:
             await self._streamdeck.do_command({"update_display": {"keys": keys}})

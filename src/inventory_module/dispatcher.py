@@ -28,8 +28,7 @@ LOGGER = logging.getLogger(__name__)
 RESERVED_WATER_OFFSET = 3
 RESERVED_FEED_OFFSET = 2
 RESERVED_THERMOSTAT_OFFSET = 1
-RESERVED_MUSIC_PLAY_OFFSET = 5  # TECH DEBT — see top of file.
-RESERVED_MUSIC_STOP_OFFSET = 4  # TECH DEBT — see top of file.
+RESERVED_MUSIC_OFFSET = 4  # TECH DEBT — see top of file.
 DEFAULT_MANUAL_WATER_ML = 50
 
 
@@ -45,6 +44,7 @@ class HomeActionDispatcher:
         # TECH DEBT — see top of file.
         self._music: GenericService | None = None
         self._music_name: str = ""
+        self._music_playing: bool | None = None
         self._manual_water_ml: int = DEFAULT_MANUAL_WATER_ML
         self._thermostat_on: bool | None = None
 
@@ -155,13 +155,54 @@ class HomeActionDispatcher:
     async def music_play(self, _payload: Any) -> dict:
         if self._music is None:
             raise RuntimeError("no music component configured")
-        return await self._music.do_command({"command": "start"})
+        LOGGER.info("music_play: dispatching start to %r", self._music_name)
+        try:
+            result = await self._music.do_command({"command": "start"})
+        except Exception as e:
+            LOGGER.error("music_play failed: %s", e)
+            raise
+        self._music_playing = True
+        LOGGER.info("music_play ok: %s", result)
+        return result
 
     # TECH DEBT — see top of file.
     async def music_stop(self, _payload: Any) -> dict:
         if self._music is None:
             raise RuntimeError("no music component configured")
-        return await self._music.do_command({"command": "stop"})
+        LOGGER.info("music_stop: dispatching stop to %r", self._music_name)
+        try:
+            result = await self._music.do_command({"command": "stop"})
+        except Exception as e:
+            LOGGER.error("music_stop failed: %s", e)
+            raise
+        self._music_playing = False
+        LOGGER.info("music_stop ok: %s", result)
+        return result
+
+    # TECH DEBT — see top of file.
+    async def music_toggle(self, payload: Any) -> dict:
+        # Base the decision on the last known state; falls back to a status
+        # probe when we've never seen one so we don't double-start.
+        playing = self._music_playing
+        if playing is None:
+            await self.refresh_music_state()
+            playing = bool(self._music_playing)
+        if playing:
+            return await self.music_stop(payload)
+        return await self.music_play(payload)
+
+    # TECH DEBT — see top of file.
+    async def refresh_music_state(self) -> None:
+        if self._music is None:
+            self._music_playing = None
+            return
+        try:
+            status = await self._music.do_command({"command": "status"})
+        except Exception as e:
+            LOGGER.warning("music state read failed: %s", e)
+            return
+        if isinstance(status, Mapping):
+            self._music_playing = bool(status.get("is_playing"))
 
     async def refresh_thermostat_state(self) -> None:
         if self._thermostat_switch is None:
@@ -185,8 +226,7 @@ class HomeActionDispatcher:
             reserved[deck_key_count - RESERVED_THERMOSTAT_OFFSET] = "thermostat"
         # TECH DEBT — see top of file.
         if self._music is not None:
-            reserved[deck_key_count - RESERVED_MUSIC_PLAY_OFFSET] = "music_play"
-            reserved[deck_key_count - RESERVED_MUSIC_STOP_OFFSET] = "music_stop"
+            reserved[deck_key_count - RESERVED_MUSIC_OFFSET] = "music"
         return reserved
 
     def reserved_slot_map_for(self, device: str, key_count: int) -> dict[int, str]:
@@ -203,10 +243,8 @@ class HomeActionDispatcher:
         if kind == "thermostat":
             return self._thermostat_key_config()
         # TECH DEBT — see top of file.
-        if kind == "music_play":
-            return self._music_play_key_config()
-        if kind == "music_stop":
-            return self._music_stop_key_config()
+        if kind == "music":
+            return self._music_key_config()
         return None
 
     def _water_key_config(self) -> dict:
@@ -243,23 +281,15 @@ class HomeActionDispatcher:
         }
 
     # TECH DEBT — see top of file.
-    def _music_play_key_config(self) -> dict:
+    def _music_key_config(self) -> dict:
+        # Label shows the action, not the current state (matches thermostat).
+        playing = bool(self._music_playing)
+        target_play = not playing
         return {
-            "text": "Play",
-            "color": "green",
+            "text": "Music play" if target_play else "Music stop",
+            "color": "green" if target_play else "red",
             "text_color": "white",
             "component": self._component_name,
             "method": "do_command",
-            "args": [{"command": "music_play"}],
-        }
-
-    # TECH DEBT — see top of file.
-    def _music_stop_key_config(self) -> dict:
-        return {
-            "text": "Stop",
-            "color": "red",
-            "text_color": "white",
-            "component": self._component_name,
-            "method": "do_command",
-            "args": [{"command": "music_stop"}],
+            "args": [{"command": "music_toggle"}],
         }

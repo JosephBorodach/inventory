@@ -645,6 +645,24 @@ class Tracker(Generic):
         await self._deck.push_layout()
         return result
 
+    # TECH DEBT — see dispatcher.py top-of-file banner.
+    async def _music_play_and_repaint(self, payload: Any) -> dict:
+        result = await self._dispatcher.music_play(payload)
+        await self._deck.push_layout()
+        return result
+
+    # TECH DEBT — see dispatcher.py top-of-file banner.
+    async def _music_stop_and_repaint(self, payload: Any) -> dict:
+        result = await self._dispatcher.music_stop(payload)
+        await self._deck.push_layout()
+        return result
+
+    # TECH DEBT — see dispatcher.py top-of-file banner.
+    async def _music_toggle_and_repaint(self, payload: Any) -> dict:
+        result = await self._dispatcher.music_toggle(payload)
+        await self._deck.push_layout()
+        return result
+
     async def _focus_step(self, payload: Any) -> dict:
         if not isinstance(payload, dict):
             raise ValueError("payload must be an object")
@@ -794,9 +812,11 @@ class Tracker(Generic):
         # TECH DEBT — music verbs live here only because inventory owns the deck.
         # Move to joseph:spotify when per-component streamdeck ownership lands.
         if verb == "music_play":
-            return await self._dispatcher.music_play(command)
+            return await self._music_play_and_repaint(command)
         if verb == "music_stop":
-            return await self._dispatcher.music_stop(command)
+            return await self._music_stop_and_repaint(command)
+        if verb == "music_toggle":
+            return await self._music_toggle_and_repaint(command)
         if verb == "lookup_barcode":
             return await self._barcode.lookup(command)
         if verb == "scan_barcode":
