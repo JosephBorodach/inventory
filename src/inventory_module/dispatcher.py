@@ -342,7 +342,7 @@ class HomeActionDispatcher:
                 "args": [{"command": "music_focus_exit"}],
             },
             base + 1: {
-                "text": "−",
+                "text": "Vol -",
                 "color": "",
                 "text_color": "",
                 "component": self._component_name,
@@ -358,7 +358,7 @@ class HomeActionDispatcher:
                 "args": [{"command": "music_toggle"}],
             },
             base + 3: {
-                "text": "+",
+                "text": "Vol +",
                 "color": "",
                 "text_color": "",
                 "component": self._component_name,
