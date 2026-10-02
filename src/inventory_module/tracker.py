@@ -692,6 +692,27 @@ class Tracker(Generic):
         self._deck.rearm_music_focus_timer()
         return result
 
+    # TECH DEBT — see dispatcher.py top-of-file banner.
+    async def _music_playlists_enter(self, _payload: Any) -> dict:
+        await self._deck.enter_playlists_focus()
+        return {"ok": True}
+
+    # TECH DEBT — see dispatcher.py top-of-file banner.
+    async def _music_playlists_exit(self, _payload: Any) -> dict:
+        await self._deck.exit_playlists_focus_to_music()
+        return {"ok": True}
+
+    # TECH DEBT — see dispatcher.py top-of-file banner.
+    async def _music_playlists_next_page(self, _payload: Any) -> dict:
+        await self._deck.playlists_next_page()
+        return {"ok": True}
+
+    # TECH DEBT — see dispatcher.py top-of-file banner.
+    async def _music_play_playlist(self, payload: Any) -> dict:
+        result = await self._dispatcher.music_play_playlist(payload)
+        await self._deck.exit_playlists_focus_to_music()
+        return result
+
     async def _focus_step(self, payload: Any) -> dict:
         if not isinstance(payload, dict):
             raise ValueError("payload must be an object")
@@ -856,6 +877,14 @@ class Tracker(Generic):
             return await self._music_volume_down(command)
         if verb == "music_next":
             return await self._music_next(command)
+        if verb == "music_playlists_enter":
+            return await self._music_playlists_enter(command)
+        if verb == "music_playlists_exit":
+            return await self._music_playlists_exit(command)
+        if verb == "music_playlists_next_page":
+            return await self._music_playlists_next_page(command)
+        if verb == "music_play_playlist":
+            return await self._music_play_playlist(command)
         if verb == "lookup_barcode":
             return await self._barcode.lookup(command)
         if verb == "scan_barcode":

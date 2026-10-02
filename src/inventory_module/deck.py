@@ -20,6 +20,7 @@ DEFAULT_DECK_REFRESH_SEC = 30
 DEFAULT_FOCUS_TIMEOUT_SEC = 60.0
 FOCUS_ITEM_SLOT = 7
 MUSIC_FOCUS_TIMEOUT_SEC = 60.0  # TECH DEBT — see dispatcher.py top-of-file banner.
+PLAYLISTS_FOCUS_TIMEOUT_SEC = 60.0  # TECH DEBT — see dispatcher.py top-of-file banner.
 
 
 def validate_deck_key_count(attrs: dict) -> None:
@@ -53,6 +54,9 @@ class DeckRenderer:
         # TECH DEBT — see dispatcher.py top-of-file banner.
         self._music_focused: bool = False
         self._music_focus_timer_task: asyncio.Task | None = None
+        # TECH DEBT — see dispatcher.py top-of-file banner.
+        self._playlists_focused: bool = False
+        self._playlists_focus_timer_task: asyncio.Task | None = None
 
     @staticmethod
     def validate_config_attrs(attrs: dict) -> list[str]:
@@ -114,13 +118,16 @@ class DeckRenderer:
             self._focus_item_id = None
             self._cancel_focus_timer()
         # TECH DEBT — see dispatcher.py top-of-file banner.
-        if self._music_focused and focused is not None:
+        if focused is not None:
             self._exit_music_focus()
-        if focused is None and not self._music_focused:
+            self._exit_playlists_focus()
+        if focused is None and not self._music_focused and not self._playlists_focused:
             await self._dispatcher.refresh_thermostat_state()
             await self._dispatcher.refresh_music_state()
         if focused is not None:
             keys = self._focus_layout(focused)
+        elif self._playlists_focused:
+            keys = self._playlists_focus_layout()
         elif self._music_focused:
             keys = self._music_focus_layout()
         else:
@@ -144,6 +151,7 @@ class DeckRenderer:
     async def enter_music_focus(self) -> None:
         self._focus_item_id = None
         self._cancel_focus_timer()
+        self._exit_playlists_focus()
         self._music_focused = True
         self._arm_music_focus_timer()
         await self.push_layout()
@@ -157,6 +165,35 @@ class DeckRenderer:
     def _exit_music_focus(self) -> None:
         self._music_focused = False
         self._cancel_music_focus_timer()
+
+    # TECH DEBT — see dispatcher.py top-of-file banner.
+    async def enter_playlists_focus(self) -> None:
+        self._focus_item_id = None
+        self._cancel_focus_timer()
+        self._exit_music_focus()
+        self._playlists_focused = True
+        self._dispatcher.music_playlists_reset_page()
+        await self._dispatcher.refresh_music_playlists()
+        self._arm_playlists_focus_timer()
+        await self.push_layout()
+
+    # TECH DEBT — see dispatcher.py top-of-file banner.
+    async def exit_playlists_focus_to_music(self) -> None:
+        self._exit_playlists_focus()
+        self._music_focused = True
+        self._arm_music_focus_timer()
+        await self.push_layout()
+
+    # TECH DEBT — see dispatcher.py top-of-file banner.
+    def _exit_playlists_focus(self) -> None:
+        self._playlists_focused = False
+        self._cancel_playlists_focus_timer()
+
+    # TECH DEBT — see dispatcher.py top-of-file banner.
+    async def playlists_next_page(self) -> None:
+        self._dispatcher.music_playlists_advance_page()
+        self._arm_playlists_focus_timer()
+        await self.push_layout()
 
     def rearm_focus_timer(self) -> None:
         self._arm_focus_timer()
@@ -223,6 +260,38 @@ class DeckRenderer:
         for slot in range(self._deck_key_count):
             keys[str(slot)] = self._empty_slot()
         for slot, cfg in self._dispatcher.music_focus_key_configs(self._deck_key_count).items():
+            keys[str(slot)] = cfg
+        return keys
+
+    # TECH DEBT — see dispatcher.py top-of-file banner.
+    def _cancel_playlists_focus_timer(self) -> None:
+        if self._playlists_focus_timer_task and not self._playlists_focus_timer_task.done():
+            self._playlists_focus_timer_task.cancel()
+        self._playlists_focus_timer_task = None
+
+    # TECH DEBT — see dispatcher.py top-of-file banner.
+    def _arm_playlists_focus_timer(self) -> None:
+        self._cancel_playlists_focus_timer()
+        with contextlib.suppress(RuntimeError):
+            self._playlists_focus_timer_task = asyncio.create_task(
+                self._playlists_focus_timeout_loop()
+            )
+
+    # TECH DEBT — see dispatcher.py top-of-file banner.
+    async def _playlists_focus_timeout_loop(self) -> None:
+        try:
+            await asyncio.sleep(PLAYLISTS_FOCUS_TIMEOUT_SEC)
+        except asyncio.CancelledError:
+            return
+        self._playlists_focused = False
+        await self.push_layout()
+
+    # TECH DEBT — see dispatcher.py top-of-file banner.
+    def _playlists_focus_layout(self) -> dict[str, dict]:
+        keys: dict[str, dict] = {}
+        for slot in range(self._deck_key_count):
+            keys[str(slot)] = self._empty_slot()
+        for slot, cfg in self._dispatcher.music_playlists_key_configs(self._deck_key_count).items():
             keys[str(slot)] = cfg
         return keys
 

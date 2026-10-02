@@ -34,6 +34,13 @@ RESERVED_MUSIC_OFFSET = 4  # TECH DEBT — see top of file.
 # Trust the optimistic post-mutation state for this long before letting a
 # background refresh overwrite it.
 MUSIC_STATE_MUTATION_COOLDOWN_SEC = 10.0
+# TECH DEBT — see top of file.
+MUSIC_PLAYLISTS_PER_PAGE = 13  # 15-key deck minus Back and Next.
+MUSIC_PLAYLISTS_CACHE_SEC = 60.0
+MUSIC_FOCUS_PLAYLISTS_SLOT = 2  # Row 0 center on a 15-key deck.
+MUSIC_PLAYLISTS_BACK_SLOT = 10
+MUSIC_PLAYLISTS_NEXT_SLOT = 14
+MUSIC_PLAYLISTS_CONTENT_SLOTS = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13)
 DEFAULT_MANUAL_WATER_ML = 50
 
 
@@ -51,6 +58,9 @@ class HomeActionDispatcher:
         self._music_name: str = ""
         self._music_playing: bool | None = None
         self._music_last_mutation_at: float = 0.0
+        self._music_playlists: list[dict] = []
+        self._music_playlists_fetched_at: float = 0.0
+        self._music_playlists_page: int = 0
         self._manual_water_ml: int = DEFAULT_MANUAL_WATER_ML
         self._thermostat_on: bool | None = None
 
@@ -218,6 +228,65 @@ class HomeActionDispatcher:
         return await self._music.do_command({"command": "next"})
 
     # TECH DEBT — see top of file.
+    async def refresh_music_playlists(self, force: bool = False) -> None:
+        if self._music is None:
+            return
+        if (
+            not force
+            and self._music_playlists
+            and time.monotonic() - self._music_playlists_fetched_at < MUSIC_PLAYLISTS_CACHE_SEC
+        ):
+            return
+        try:
+            result = await self._music.do_command({"command": "playlists"})
+        except Exception as e:
+            LOGGER.warning("music playlists fetch failed: %s", e)
+            return
+        if isinstance(result, Mapping):
+            items = result.get("items")
+            if isinstance(items, list):
+                self._music_playlists = [
+                    p for p in items if isinstance(p, dict) and p.get("uri") and p.get("name")
+                ]
+                self._music_playlists_fetched_at = time.monotonic()
+
+    # TECH DEBT — see top of file.
+    async def music_play_playlist(self, payload: Any) -> dict:
+        if self._music is None:
+            raise RuntimeError("no music component configured")
+        if not isinstance(payload, Mapping):
+            raise ValueError("payload must be an object with `context_uri`")
+        uri = payload.get("context_uri")
+        if not isinstance(uri, str) or not uri:
+            raise ValueError("`context_uri` must be a non-empty string")
+        LOGGER.info("music_play_playlist: %s", uri)
+        try:
+            result = await self._music.do_command({"command": "start", "context_uri": uri})
+        except Exception as e:
+            LOGGER.error("music_play_playlist failed: %s", e)
+            raise
+        self._music_playing = True
+        self._music_last_mutation_at = time.monotonic()
+        return result
+
+    # TECH DEBT — see top of file.
+    def music_playlists_page_count(self) -> int:
+        n = len(self._music_playlists)
+        if n == 0:
+            return 1
+        return (n + MUSIC_PLAYLISTS_PER_PAGE - 1) // MUSIC_PLAYLISTS_PER_PAGE
+
+    # TECH DEBT — see top of file.
+    def music_playlists_reset_page(self) -> None:
+        self._music_playlists_page = 0
+
+    # TECH DEBT — see top of file.
+    def music_playlists_advance_page(self) -> int:
+        pages = self.music_playlists_page_count()
+        self._music_playlists_page = (self._music_playlists_page + 1) % pages
+        return self._music_playlists_page
+
+    # TECH DEBT — see top of file.
     async def refresh_music_state(self) -> None:
         if self._music is None:
             self._music_playing = None
@@ -332,7 +401,7 @@ class HomeActionDispatcher:
         toggle_target_play = not playing
         toggle_text = "Play" if toggle_target_play else "Stop"
         toggle_color = "green" if toggle_target_play else "red"
-        return {
+        out: dict[int, dict] = {
             base + 0: {
                 "text": "Back",
                 "color": "",
@@ -374,3 +443,66 @@ class HomeActionDispatcher:
                 "args": [{"command": "music_next"}],
             },
         }
+        if deck_key_count >= 15:
+            out[MUSIC_FOCUS_PLAYLISTS_SLOT] = {
+                "text": "Playlists",
+                "color": "",
+                "text_color": "",
+                "component": self._component_name,
+                "method": "do_command",
+                "args": [{"command": "music_playlists_enter"}],
+            }
+        return out
+
+    # TECH DEBT — see top of file.
+    def music_playlists_key_configs(self, deck_key_count: int) -> dict[int, dict]:
+        if deck_key_count < 15:
+            # No sane layout for small decks; just show Back and let caller handle.
+            return {
+                0: {
+                    "text": "Back",
+                    "color": "",
+                    "text_color": "",
+                    "component": self._component_name,
+                    "method": "do_command",
+                    "args": [{"command": "music_playlists_exit"}],
+                },
+            }
+        page_count = self.music_playlists_page_count()
+        page = max(0, min(self._music_playlists_page, page_count - 1))
+        start = page * MUSIC_PLAYLISTS_PER_PAGE
+        page_items = self._music_playlists[start : start + MUSIC_PLAYLISTS_PER_PAGE]
+        out: dict[int, dict] = {}
+        for i, slot in enumerate(MUSIC_PLAYLISTS_CONTENT_SLOTS):
+            if i >= len(page_items):
+                break
+            p = page_items[i]
+            out[slot] = {
+                "text": str(p.get("name") or "?"),
+                "color": "",
+                "text_color": "",
+                "component": self._component_name,
+                "method": "do_command",
+                "args": [{
+                    "command": "music_play_playlist",
+                    "context_uri": p.get("uri"),
+                }],
+            }
+        out[MUSIC_PLAYLISTS_BACK_SLOT] = {
+            "text": "Back",
+            "color": "",
+            "text_color": "",
+            "component": self._component_name,
+            "method": "do_command",
+            "args": [{"command": "music_playlists_exit"}],
+        }
+        next_label = f"Next {page + 1}/{page_count}" if page_count > 1 else "Next"
+        out[MUSIC_PLAYLISTS_NEXT_SLOT] = {
+            "text": next_label,
+            "color": "",
+            "text_color": "",
+            "component": self._component_name,
+            "method": "do_command",
+            "args": [{"command": "music_playlists_next_page"}],
+        }
+        return out
