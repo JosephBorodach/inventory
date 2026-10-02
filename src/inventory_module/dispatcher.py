@@ -38,6 +38,7 @@ MUSIC_STATE_MUTATION_COOLDOWN_SEC = 10.0
 MUSIC_PLAYLISTS_PER_PAGE = 13  # 15-key deck minus Back and Next.
 MUSIC_PLAYLISTS_CACHE_SEC = 60.0
 MUSIC_FOCUS_PLAYLISTS_SLOT = 2  # Row 0 center on a 15-key deck.
+MUSIC_FOCUS_ACCOUNT_SLOTS = (1, 3)  # Row 0, flanking Playlists.
 MUSIC_PLAYLISTS_BACK_SLOT = 10
 MUSIC_PLAYLISTS_NEXT_SLOT = 14
 MUSIC_PLAYLISTS_CONTENT_SLOTS = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13)
@@ -61,6 +62,8 @@ class HomeActionDispatcher:
         self._music_playlists: list[dict] = []
         self._music_playlists_fetched_at: float = 0.0
         self._music_playlists_page: int = 0
+        self._music_accounts: list[str] = []
+        self._music_active_account: str = ""
         self._manual_water_ml: int = DEFAULT_MANUAL_WATER_ML
         self._thermostat_on: bool | None = None
 
@@ -228,6 +231,25 @@ class HomeActionDispatcher:
         return await self._music.do_command({"command": "next"})
 
     # TECH DEBT — see top of file.
+    async def music_set_account(self, payload: Any) -> dict:
+        if self._music is None:
+            raise RuntimeError("no music component configured")
+        if not isinstance(payload, Mapping):
+            raise ValueError("payload must be {name: ...}")
+        name = payload.get("name")
+        if not isinstance(name, str) or not name:
+            raise ValueError("`name` must be a non-empty string")
+        LOGGER.info("music_set_account: dispatching set_account %r", name)
+        try:
+            result = await self._music.do_command({"command": "set_account", "name": name})
+        except Exception as e:
+            LOGGER.error("music_set_account failed: %s", e)
+            raise
+        self._music_active_account = name
+        self._music_last_mutation_at = time.monotonic()
+        return result
+
+    # TECH DEBT — see top of file.
     async def refresh_music_playlists(self, force: bool = False) -> None:
         if self._music is None:
             return
@@ -290,6 +312,8 @@ class HomeActionDispatcher:
     async def refresh_music_state(self) -> None:
         if self._music is None:
             self._music_playing = None
+            self._music_accounts = []
+            self._music_active_account = ""
             return
         if (
             time.monotonic() - self._music_last_mutation_at
@@ -303,6 +327,15 @@ class HomeActionDispatcher:
             return
         if isinstance(status, Mapping):
             self._music_playing = bool(status.get("is_playing"))
+            accounts = status.get("accounts")
+            if isinstance(accounts, list):
+                self._music_accounts = [
+                    a.get("name") for a in accounts
+                    if isinstance(a, dict) and isinstance(a.get("name"), str) and a.get("name")
+                ]
+            active = status.get("active_account")
+            if isinstance(active, str):
+                self._music_active_account = active
 
     async def refresh_thermostat_state(self) -> None:
         if self._thermostat_switch is None:
@@ -452,6 +485,21 @@ class HomeActionDispatcher:
                 "method": "do_command",
                 "args": [{"command": "music_playlists_enter"}],
             }
+            # Account picker — flanks the Playlists key when there's more
+            # than one configured account. Active = green, inactive = default.
+            if len(self._music_accounts) >= 2:
+                for slot, account in zip(
+                    MUSIC_FOCUS_ACCOUNT_SLOTS, self._music_accounts[:2], strict=False
+                ):
+                    is_active = account == self._music_active_account
+                    out[slot] = {
+                        "text": account,
+                        "color": "green" if is_active else "",
+                        "text_color": "white" if is_active else "",
+                        "component": self._component_name,
+                        "method": "do_command",
+                        "args": [{"command": "music_set_account", "name": account}],
+                    }
         return out
 
     # TECH DEBT — see top of file.

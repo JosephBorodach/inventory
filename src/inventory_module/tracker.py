@@ -713,6 +713,13 @@ class Tracker(Generic):
         await self._deck.exit_playlists_focus_to_music()
         return result
 
+    # TECH DEBT — see dispatcher.py top-of-file banner.
+    async def _music_set_account(self, payload: Any) -> dict:
+        result = await self._dispatcher.music_set_account(payload)
+        self._deck.rearm_music_focus_timer()
+        await self._deck.push_layout()
+        return result
+
     async def _focus_step(self, payload: Any) -> dict:
         if not isinstance(payload, dict):
             raise ValueError("payload must be an object")
@@ -885,6 +892,8 @@ class Tracker(Generic):
             return await self._music_playlists_next_page(command)
         if verb == "music_play_playlist":
             return await self._music_play_playlist(command)
+        if verb == "music_set_account":
+            return await self._music_set_account(command)
         if verb == "lookup_barcode":
             return await self._barcode.lookup(command)
         if verb == "scan_barcode":
