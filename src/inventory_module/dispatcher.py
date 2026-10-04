@@ -397,7 +397,29 @@ class HomeActionDispatcher:
             "text_color": "",
             "component": self._component_name,
             "method": "do_command",
-            "args": [{"command": "feed_now"}],
+            "args": [{"command": "feed_show_confirm"}],
+        }
+
+    def feed_confirm_key_configs(self, deck_key_count: int) -> dict[int, dict]:
+        back_slot = deck_key_count - RESERVED_WATER_OFFSET
+        confirm_slot = deck_key_count - RESERVED_FEED_OFFSET
+        return {
+            back_slot: {
+                "text": "Back",
+                "color": "red",
+                "text_color": "white",
+                "component": self._component_name,
+                "method": "do_command",
+                "args": [{"command": "feed_cancel"}],
+            },
+            confirm_slot: {
+                "text": "Confirm",
+                "color": "seagreen",
+                "text_color": "white",
+                "component": self._component_name,
+                "method": "do_command",
+                "args": [{"command": "feed_now"}],
+            },
         }
 
     def _thermostat_key_config(self) -> dict:
@@ -406,7 +428,7 @@ class HomeActionDispatcher:
         target_on = not on
         return {
             "text": "Thermostat ON" if target_on else "Thermostat OFF",
-            "color": "green" if target_on else "",
+            "color": "seagreen" if target_on else "",
             "text_color": "white" if target_on else "",
             "component": self._component_name,
             "method": "do_command",
@@ -433,7 +455,7 @@ class HomeActionDispatcher:
         playing = bool(self._music_playing)
         toggle_target_play = not playing
         toggle_text = "Play" if toggle_target_play else "Stop"
-        toggle_color = "green" if toggle_target_play else "red"
+        toggle_color = "seagreen" if toggle_target_play else "red"
         out: dict[int, dict] = {
             base + 0: {
                 "text": "Back",
@@ -494,7 +516,7 @@ class HomeActionDispatcher:
                     is_active = account == self._music_active_account
                     out[slot] = {
                         "text": account,
-                        "color": "green" if is_active else "",
+                        "color": "seagreen" if is_active else "",
                         "text_color": "white" if is_active else "",
                         "component": self._component_name,
                         "method": "do_command",
