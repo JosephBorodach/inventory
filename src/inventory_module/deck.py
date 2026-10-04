@@ -203,7 +203,7 @@ class DeckRenderer:
 
     # TECH DEBT — see dispatcher.py top-of-file banner.
     async def playlists_next_page(self) -> None:
-        self._dispatcher.music_playlists_advance_page()
+        self._dispatcher.music_playlists_advance_page(self._deck_key_count)
         self._arm_playlists_focus_timer()
         await self.push_layout()
 

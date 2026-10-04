@@ -35,14 +35,47 @@ RESERVED_MUSIC_OFFSET = 4  # TECH DEBT — see top of file.
 # background refresh overwrite it.
 MUSIC_STATE_MUTATION_COOLDOWN_SEC = 10.0
 # TECH DEBT — see top of file.
-MUSIC_PLAYLISTS_PER_PAGE = 13  # 15-key deck minus Back and Next.
 MUSIC_PLAYLISTS_CACHE_SEC = 60.0
-MUSIC_FOCUS_PLAYLISTS_SLOT = 2  # Row 0 center on a 15-key deck.
-MUSIC_FOCUS_ACCOUNT_SLOTS = (1, 3)  # Row 0, flanking Playlists.
-MUSIC_PLAYLISTS_BACK_SLOT = 10
-MUSIC_PLAYLISTS_NEXT_SLOT = 14
-MUSIC_PLAYLISTS_CONTENT_SLOTS = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13)
+# 15-key deck constants.
+MUSIC_PLAYLISTS_PER_PAGE_15 = 13
+MUSIC_FOCUS_PLAYLISTS_SLOT_15 = 2
+MUSIC_FOCUS_ACCOUNT_SLOTS_15 = (1, 3)
+MUSIC_PLAYLISTS_BACK_SLOT_15 = 10
+MUSIC_PLAYLISTS_NEXT_SLOT_15 = 14
+MUSIC_PLAYLISTS_CONTENT_SLOTS_15 = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13)
+# 6-key (Stream Deck Mini) deck constants.
+#   Row 0:  Back       Playlists   Next
+#   Row 1:  Vol -      Play/Stop   Vol +
+MUSIC_FOCUS_SLOTS_6 = {
+    "back": 0, "playlists": 1, "next": 2,
+    "vol_down": 3, "play_stop": 4, "vol_up": 5,
+}
+#   Row 0:  PL1   PL2   PL3
+#   Row 1:  Back  PL4   Next
+MUSIC_PLAYLISTS_PER_PAGE_6 = 4
+MUSIC_PLAYLISTS_BACK_SLOT_6 = 3
+MUSIC_PLAYLISTS_NEXT_SLOT_6 = 5
+MUSIC_PLAYLISTS_CONTENT_SLOTS_6 = (0, 1, 2, 4)
 DEFAULT_MANUAL_WATER_ML = 50
+
+
+# TECH DEBT — see top of file.
+def _is_mini_deck(deck_key_count: int) -> bool:
+    return deck_key_count < 10
+
+
+# TECH DEBT — see top of file.
+def _music_slot(deck_key_count: int) -> int:
+    if _is_mini_deck(deck_key_count):
+        return 0  # Top-left on a mini deck.
+    return deck_key_count - RESERVED_MUSIC_OFFSET
+
+
+# TECH DEBT — see top of file.
+def _playlists_per_page(deck_key_count: int) -> int:
+    if _is_mini_deck(deck_key_count):
+        return MUSIC_PLAYLISTS_PER_PAGE_6
+    return MUSIC_PLAYLISTS_PER_PAGE_15
 
 
 class HomeActionDispatcher:
@@ -292,19 +325,20 @@ class HomeActionDispatcher:
         return result
 
     # TECH DEBT — see top of file.
-    def music_playlists_page_count(self) -> int:
+    def music_playlists_page_count(self, deck_key_count: int) -> int:
+        per_page = _playlists_per_page(deck_key_count)
         n = len(self._music_playlists)
         if n == 0:
             return 1
-        return (n + MUSIC_PLAYLISTS_PER_PAGE - 1) // MUSIC_PLAYLISTS_PER_PAGE
+        return (n + per_page - 1) // per_page
 
     # TECH DEBT — see top of file.
     def music_playlists_reset_page(self) -> None:
         self._music_playlists_page = 0
 
     # TECH DEBT — see top of file.
-    def music_playlists_advance_page(self) -> int:
-        pages = self.music_playlists_page_count()
+    def music_playlists_advance_page(self, deck_key_count: int) -> int:
+        pages = self.music_playlists_page_count(deck_key_count)
         self._music_playlists_page = (self._music_playlists_page + 1) % pages
         return self._music_playlists_page
 
@@ -357,9 +391,9 @@ class HomeActionDispatcher:
             reserved[deck_key_count - RESERVED_FEED_OFFSET] = "feed"
         if self._thermostat_switch is not None:
             reserved[deck_key_count - RESERVED_THERMOSTAT_OFFSET] = "thermostat"
-        # TECH DEBT — see top of file.
+        # TECH DEBT — see top of file. Mini decks anchor Music top-left.
         if self._music is not None:
-            reserved[deck_key_count - RESERVED_MUSIC_OFFSET] = "music"
+            reserved[_music_slot(deck_key_count)] = "music"
         return reserved
 
     def reserved_slot_map_for(self, device: str, key_count: int) -> dict[int, str]:
@@ -449,101 +483,95 @@ class HomeActionDispatcher:
 
     # TECH DEBT — see top of file.
     def music_focus_key_configs(self, deck_key_count: int) -> dict[int, dict]:
-        # Center row of a 15-key deck is slots 5-9. On smaller decks, fall back
-        # to the top-left 5 slots.
-        base = 5 if deck_key_count >= 15 else 0
         playing = bool(self._music_playing)
         toggle_target_play = not playing
         toggle_text = "Play" if toggle_target_play else "Stop"
         toggle_color = "seagreen" if toggle_target_play else "red"
-        out: dict[int, dict] = {
-            base + 0: {
-                "text": "Back",
-                "color": "",
-                "text_color": "",
-                "component": self._component_name,
-                "method": "do_command",
-                "args": [{"command": "music_focus_exit"}],
-            },
-            base + 1: {
-                "text": "Vol -",
-                "color": "",
-                "text_color": "",
-                "component": self._component_name,
-                "method": "do_command",
-                "args": [{"command": "music_volume_down"}],
-            },
-            base + 2: {
-                "text": toggle_text,
-                "color": toggle_color,
-                "text_color": "white",
-                "component": self._component_name,
-                "method": "do_command",
-                "args": [{"command": "music_toggle"}],
-            },
-            base + 3: {
-                "text": "Vol +",
-                "color": "",
-                "text_color": "",
-                "component": self._component_name,
-                "method": "do_command",
-                "args": [{"command": "music_volume_up"}],
-            },
-            base + 4: {
-                "text": "Next",
-                "color": "",
-                "text_color": "",
-                "component": self._component_name,
-                "method": "do_command",
-                "args": [{"command": "music_next"}],
-            },
+        back = {
+            "text": "Back", "color": "", "text_color": "",
+            "component": self._component_name, "method": "do_command",
+            "args": [{"command": "music_focus_exit"}],
         }
-        if deck_key_count >= 15:
-            out[MUSIC_FOCUS_PLAYLISTS_SLOT] = {
-                "text": "Playlists",
-                "color": "",
-                "text_color": "",
-                "component": self._component_name,
-                "method": "do_command",
-                "args": [{"command": "music_playlists_enter"}],
+        vol_down = {
+            "text": "Vol -", "color": "", "text_color": "",
+            "component": self._component_name, "method": "do_command",
+            "args": [{"command": "music_volume_down"}],
+        }
+        play_stop = {
+            "text": toggle_text, "color": toggle_color, "text_color": "white",
+            "component": self._component_name, "method": "do_command",
+            "args": [{"command": "music_toggle"}],
+        }
+        vol_up = {
+            "text": "Vol +", "color": "", "text_color": "",
+            "component": self._component_name, "method": "do_command",
+            "args": [{"command": "music_volume_up"}],
+        }
+        next_track = {
+            "text": "Next", "color": "", "text_color": "",
+            "component": self._component_name, "method": "do_command",
+            "args": [{"command": "music_next"}],
+        }
+        playlists = {
+            "text": "Playlists", "color": "", "text_color": "",
+            "component": self._component_name, "method": "do_command",
+            "args": [{"command": "music_playlists_enter"}],
+        }
+
+        if _is_mini_deck(deck_key_count):
+            s = MUSIC_FOCUS_SLOTS_6
+            return {
+                s["back"]: back,
+                s["playlists"]: playlists,
+                s["next"]: next_track,
+                s["vol_down"]: vol_down,
+                s["play_stop"]: play_stop,
+                s["vol_up"]: vol_up,
             }
-            # Account picker — flanks the Playlists key when there's more
-            # than one configured account. Active = green, inactive = default.
-            if len(self._music_accounts) >= 2:
-                for slot, account in zip(
-                    MUSIC_FOCUS_ACCOUNT_SLOTS, self._music_accounts[:2], strict=False
-                ):
-                    is_active = account == self._music_active_account
-                    out[slot] = {
-                        "text": account,
-                        "color": "seagreen" if is_active else "",
-                        "text_color": "white" if is_active else "",
-                        "component": self._component_name,
-                        "method": "do_command",
-                        "args": [{"command": "music_set_account", "name": account}],
-                    }
+
+        # 15-key default: center row for transport, top row for playlists/accounts.
+        base = 5
+        out: dict[int, dict] = {
+            base + 0: back,
+            base + 1: vol_down,
+            base + 2: play_stop,
+            base + 3: vol_up,
+            base + 4: next_track,
+            MUSIC_FOCUS_PLAYLISTS_SLOT_15: playlists,
+        }
+        if len(self._music_accounts) >= 2:
+            for slot, account in zip(
+                MUSIC_FOCUS_ACCOUNT_SLOTS_15, self._music_accounts[:2], strict=False
+            ):
+                is_active = account == self._music_active_account
+                out[slot] = {
+                    "text": account,
+                    "color": "seagreen" if is_active else "",
+                    "text_color": "white" if is_active else "",
+                    "component": self._component_name,
+                    "method": "do_command",
+                    "args": [{"command": "music_set_account", "name": account}],
+                }
         return out
 
     # TECH DEBT — see top of file.
     def music_playlists_key_configs(self, deck_key_count: int) -> dict[int, dict]:
-        if deck_key_count < 15:
-            # No sane layout for small decks; just show Back and let caller handle.
-            return {
-                0: {
-                    "text": "Back",
-                    "color": "",
-                    "text_color": "",
-                    "component": self._component_name,
-                    "method": "do_command",
-                    "args": [{"command": "music_playlists_exit"}],
-                },
-            }
-        page_count = self.music_playlists_page_count()
+        if _is_mini_deck(deck_key_count):
+            content_slots = MUSIC_PLAYLISTS_CONTENT_SLOTS_6
+            back_slot = MUSIC_PLAYLISTS_BACK_SLOT_6
+            next_slot = MUSIC_PLAYLISTS_NEXT_SLOT_6
+            per_page = MUSIC_PLAYLISTS_PER_PAGE_6
+        else:
+            content_slots = MUSIC_PLAYLISTS_CONTENT_SLOTS_15
+            back_slot = MUSIC_PLAYLISTS_BACK_SLOT_15
+            next_slot = MUSIC_PLAYLISTS_NEXT_SLOT_15
+            per_page = MUSIC_PLAYLISTS_PER_PAGE_15
+        page_count = self.music_playlists_page_count(deck_key_count)
         page = max(0, min(self._music_playlists_page, page_count - 1))
-        start = page * MUSIC_PLAYLISTS_PER_PAGE
-        page_items = self._music_playlists[start : start + MUSIC_PLAYLISTS_PER_PAGE]
+        start = page * per_page
+        page_items = self._music_playlists[start : start + per_page]
         out: dict[int, dict] = {}
-        for i, slot in enumerate(MUSIC_PLAYLISTS_CONTENT_SLOTS):
+        for i, slot in enumerate(content_slots):
             if i >= len(page_items):
                 break
             p = page_items[i]
@@ -558,7 +586,7 @@ class HomeActionDispatcher:
                     "context_uri": p.get("uri"),
                 }],
             }
-        out[MUSIC_PLAYLISTS_BACK_SLOT] = {
+        out[back_slot] = {
             "text": "Back",
             "color": "",
             "text_color": "",
@@ -567,7 +595,7 @@ class HomeActionDispatcher:
             "args": [{"command": "music_playlists_exit"}],
         }
         next_label = f"Next {page + 1}/{page_count}" if page_count > 1 else "Next"
-        out[MUSIC_PLAYLISTS_NEXT_SLOT] = {
+        out[next_slot] = {
             "text": next_label,
             "color": "",
             "text_color": "",
