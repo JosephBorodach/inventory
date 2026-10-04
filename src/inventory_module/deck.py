@@ -21,6 +21,7 @@ DEFAULT_FOCUS_TIMEOUT_SEC = 60.0
 FOCUS_ITEM_SLOT = 7
 MUSIC_FOCUS_TIMEOUT_SEC = 60.0  # TECH DEBT — see dispatcher.py top-of-file banner.
 PLAYLISTS_FOCUS_TIMEOUT_SEC = 60.0  # TECH DEBT — see dispatcher.py top-of-file banner.
+FEED_CONFIRM_TIMEOUT_SEC = 15.0
 
 
 def validate_deck_key_count(attrs: dict) -> None:
@@ -57,6 +58,8 @@ class DeckRenderer:
         # TECH DEBT — see dispatcher.py top-of-file banner.
         self._playlists_focused: bool = False
         self._playlists_focus_timer_task: asyncio.Task | None = None
+        self._feed_confirm_focused: bool = False
+        self._feed_confirm_timer_task: asyncio.Task | None = None
 
     @staticmethod
     def validate_config_attrs(attrs: dict) -> list[str]:
@@ -121,11 +124,20 @@ class DeckRenderer:
         if focused is not None:
             self._exit_music_focus()
             self._exit_playlists_focus()
-        if focused is None and not self._music_focused and not self._playlists_focused:
+            self._feed_confirm_focused = False
+            self._cancel_feed_confirm_timer()
+        if (
+            focused is None
+            and not self._music_focused
+            and not self._playlists_focused
+            and not self._feed_confirm_focused
+        ):
             await self._dispatcher.refresh_thermostat_state()
             await self._dispatcher.refresh_music_state()
         if focused is not None:
             keys = self._focus_layout(focused)
+        elif self._feed_confirm_focused:
+            keys = self._feed_confirm_layout()
         elif self._playlists_focused:
             keys = self._playlists_focus_layout()
         elif self._music_focused:
@@ -295,6 +307,48 @@ class DeckRenderer:
             keys[str(slot)] = cfg
         return keys
 
+    def _cancel_feed_confirm_timer(self) -> None:
+        if self._feed_confirm_timer_task and not self._feed_confirm_timer_task.done():
+            self._feed_confirm_timer_task.cancel()
+        self._feed_confirm_timer_task = None
+
+    def _arm_feed_confirm_timer(self) -> None:
+        self._cancel_feed_confirm_timer()
+        with contextlib.suppress(RuntimeError):
+            self._feed_confirm_timer_task = asyncio.create_task(
+                self._feed_confirm_timeout_loop()
+            )
+
+    async def _feed_confirm_timeout_loop(self) -> None:
+        try:
+            await asyncio.sleep(FEED_CONFIRM_TIMEOUT_SEC)
+        except asyncio.CancelledError:
+            return
+        self._feed_confirm_focused = False
+        await self.push_layout()
+
+    def _feed_confirm_layout(self) -> dict[str, dict]:
+        keys: dict[str, dict] = {}
+        for slot in range(self._deck_key_count):
+            keys[str(slot)] = self._empty_slot()
+        for slot, cfg in self._dispatcher.feed_confirm_key_configs(self._deck_key_count).items():
+            keys[str(slot)] = cfg
+        return keys
+
+    async def enter_feed_confirm(self) -> None:
+        self._feed_confirm_focused = True
+        self._focus_item_id = None
+        self._cancel_focus_timer()
+        self._exit_music_focus()
+        self._exit_playlists_focus()
+        self._arm_feed_confirm_timer()
+        await self.push_layout()
+
+    async def exit_feed_confirm(self) -> None:
+        self._feed_confirm_focused = False
+        self._cancel_feed_confirm_timer()
+        await self.push_layout()
+
     def _slotted_items(self, device: str = "kitchen") -> dict[int, dict]:
         out: dict[int, dict] = {}
         for item in self._items_getter():
@@ -380,7 +434,7 @@ class DeckRenderer:
         if minus_slot != item_slot:
             keys[str(minus_slot)] = self._focus_control("-", -1, "red")
         if plus_slot != item_slot:
-            keys[str(plus_slot)] = self._focus_control("+", 1, "green")
+            keys[str(plus_slot)] = self._focus_control("+", 1, "seagreen")
         keys[str(item_slot)] = self._focus_item(item)
         return keys
 
@@ -390,7 +444,7 @@ def _threshold_color(item: dict) -> str | None:
     if threshold is None:
         return None
     qty = int(item.get("quantity") or 0)
-    return "green" if qty > threshold else "red"
+    return "seagreen" if qty > threshold else "red"
 
 
 def _item_color(item: dict) -> str | None:
@@ -407,5 +461,5 @@ def _item_color(item: dict) -> str | None:
                 )
             except ValueError:
                 actionable = True
-        return "green" if actionable else "gray"
+        return "seagreen" if actionable else "gray"
     return _threshold_color(item)

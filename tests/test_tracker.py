@@ -459,7 +459,7 @@ async def test_press_enters_focus_mode(tmp_path):
     assert keys["6"]["color"] == "red"
     assert keys["6"]["args"][0] == {"command": "focus_step", "delta": -1}
     assert keys["8"]["text"] == "+"
-    assert keys["8"]["color"] == "green"
+    assert keys["8"]["color"] == "seagreen"
     assert keys["8"]["args"][0] == {"command": "focus_step", "delta": 1}
     for other in ("0", "1", "2", "3", "4", "5", "9", "10", "11", "12", "13", "14"):
         assert keys[other]["text"] == " ", f"slot {other} should be blank"
@@ -619,7 +619,7 @@ async def test_reserved_slots_render_when_deps_configured(tmp_path):
     assert keys["12"]["text"].startswith("Water")
     assert keys["12"]["args"][0] == {"command": "water_manual"}
     assert keys["13"]["text"] == "Feed"
-    assert keys["13"]["args"][0] == {"command": "feed_now"}
+    assert keys["13"]["args"][0] == {"command": "feed_show_confirm"}
     # Label shows the ACTION (press to turn it OFF), because thermostat is
     # currently on (thermostat_position=1 in the fixture).
     assert keys["14"]["text"] == "Thermostat OFF"
@@ -652,7 +652,7 @@ async def test_thermostat_off_shows_turn_on_action(tmp_path):
     await t._deck.push_layout()
     keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
     assert keys["14"]["text"] == "Thermostat ON"
-    assert keys["14"]["color"] == "green"
+    assert keys["14"]["color"] == "seagreen"
 
 
 async def test_water_manual_calls_waterer_with_configured_ml(tmp_path):
@@ -839,7 +839,7 @@ async def test_deck_key_color_above_threshold_is_green(tmp_path):
     item = await _add_egg(t, button=_btn(3), threshold=2)
     await t._set_quantity({"id": item["id"], "quantity": 5})
     keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
-    assert keys["3"]["color"] == "green"
+    assert keys["3"]["color"] == "seagreen"
     assert keys["3"]["text_color"] == "white"
 
 
@@ -966,7 +966,7 @@ async def test_deck_routine_never_done_is_green(tmp_path):
     t, _, _, deck = _make(tmp_path, with_streamdeck=True)
     await _add_routine_item(t, button=_btn(3))
     keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
-    assert keys["3"]["color"] == "green"
+    assert keys["3"]["color"] == "seagreen"
 
 
 async def test_deck_routine_recently_done_is_gray(tmp_path):
@@ -986,7 +986,7 @@ async def test_deck_routine_overdue_is_green(tmp_path):
     item["routine"]["last_done_at"] = long_ago
     await t._deck.push_layout()
     keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
-    assert keys["3"]["color"] == "green"
+    assert keys["3"]["color"] == "seagreen"
 
 
 async def test_deck_routine_only_text_omits_count(tmp_path):

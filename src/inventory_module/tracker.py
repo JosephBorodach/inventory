@@ -645,6 +645,19 @@ class Tracker(Generic):
         await self._deck.push_layout()
         return result
 
+    async def _feed_show_confirm(self) -> dict:
+        await self._deck.enter_feed_confirm()
+        return {"ok": True}
+
+    async def _feed_cancel(self) -> dict:
+        await self._deck.exit_feed_confirm()
+        return {"ok": True}
+
+    async def _feed_now_and_repaint(self, payload: Any) -> dict:
+        result = await self._dispatcher.feed_now(payload)
+        await self._deck.exit_feed_confirm()
+        return result
+
     # TECH DEBT — see dispatcher.py top-of-file banner.
     async def _music_play_and_repaint(self, payload: Any) -> dict:
         result = await self._dispatcher.music_play(payload)
@@ -863,7 +876,11 @@ class Tracker(Generic):
         if verb == "water_manual":
             return await self._dispatcher.water_manual(command)
         if verb == "feed_now":
-            return await self._dispatcher.feed_now(command)
+            return await self._feed_now_and_repaint(command)
+        if verb == "feed_show_confirm":
+            return await self._feed_show_confirm()
+        if verb == "feed_cancel":
+            return await self._feed_cancel()
         if verb == "thermostat_toggle":
             return await self._thermostat_toggle_and_repaint(command)
         # TECH DEBT — music verbs live here only because inventory owns the deck.
