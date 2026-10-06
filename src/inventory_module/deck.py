@@ -434,7 +434,8 @@ class DeckRenderer:
 
     def _focus_layout(self, item: dict) -> dict[str, dict]:
         # Clamp so −/+/item still fit on smaller decks.
-        item_slot = min(self._dispatcher.item_focus_slot(self._deck_key_count), self._deck_key_count - 1)
+        requested = self._dispatcher.item_focus_slot(self._deck_key_count)
+        item_slot = min(requested, self._deck_key_count - 1)
         minus_slot = max(0, item_slot - 1)
         plus_slot = min(self._deck_key_count - 1, item_slot + 1)
         keys: dict[str, dict] = {}
