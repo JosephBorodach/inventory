@@ -211,7 +211,11 @@ class Tracker(Generic):
         self._devices: list[dict] = []
         self._dispatcher = HomeActionDispatcher(self.name)
         self._deck = DeckRenderer(
-            self.name, lambda: self._state["items"], self._find_item, self._dispatcher
+            self.name,
+            lambda: self._state["items"],
+            self._find_item,
+            self._dispatcher,
+            lambda: self._devices,
         )
         self._barcode = BarcodeLookup(
             lambda: self._state,
