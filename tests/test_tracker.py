@@ -834,13 +834,16 @@ async def test_edit_item_can_set_and_clear_threshold(tmp_path):
     assert r["item"]["threshold"] is None
 
 
-async def test_deck_key_color_above_threshold_is_green(tmp_path):
+async def test_deck_key_color_above_threshold_is_cleared(tmp_path):
+    # Well-stocked items used to paint seagreen; now they clear back to the
+    # deck's default appearance. The clear must be explicit ("") rather than
+    # omitted, because the streamdeck module merges key updates.
     t, _, _, deck = _make(tmp_path, with_streamdeck=True)
     item = await _add_egg(t, button=_btn(3), threshold=2)
     await t._set_quantity({"id": item["id"], "quantity": 5})
     keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
-    assert keys["3"]["color"] == "seagreen"
-    assert keys["3"]["text_color"] == "white"
+    assert keys["3"]["color"] == ""
+    assert keys["3"]["text_color"] == ""
 
 
 async def test_deck_key_color_at_threshold_is_red(tmp_path):
@@ -862,11 +865,14 @@ async def test_deck_key_color_below_threshold_is_red(tmp_path):
 
 
 async def test_deck_key_no_color_when_threshold_unset(tmp_path):
+    # Items without a threshold render in the deck's default appearance. We
+    # still emit color/text_color explicitly so a prior red/green from this
+    # slot gets cleared on the next push.
     t, _, _, deck = _make(tmp_path, with_streamdeck=True)
     await _add_egg(t, button=_btn(3))
     keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
-    assert "color" not in keys["3"]
-    assert "text_color" not in keys["3"]
+    assert keys["3"]["color"] == ""
+    assert keys["3"]["text_color"] == ""
 
 
 # -- routine capability ------------------------------------------------
@@ -969,12 +975,15 @@ async def test_deck_routine_never_done_is_green(tmp_path):
     assert keys["3"]["color"] == "seagreen"
 
 
-async def test_deck_routine_recently_done_is_gray(tmp_path):
+async def test_deck_routine_recently_done_is_cleared(tmp_path):
+    # Completed routines used to paint gray, which read as "broken." They
+    # now clear back to the deck's default appearance, same as well-stocked
+    # supply items.
     t, _, _, deck = _make(tmp_path, with_streamdeck=True)
     item = await _add_routine_item(t, button=_btn(3))
     await t._mark_routine_done({"id": item["id"]})
     keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
-    assert keys["3"]["color"] == "gray"
+    assert keys["3"]["color"] == ""
 
 
 async def test_deck_routine_overdue_is_green(tmp_path):
