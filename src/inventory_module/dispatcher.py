@@ -52,6 +52,8 @@ FEED_CONFIRM_CONFIRM_SLOT_XL = 20
 MUSIC_PLAYLISTS_CONTENT_SLOTS_XL = (8, 9, 10, 11, 12, 13, 14, 15)
 MUSIC_PLAYLISTS_BACK_SLOT_XL = 18
 MUSIC_PLAYLISTS_NEXT_SLOT_XL = 22
+FOCUS_ITEM_SLOT_15 = 7
+FOCUS_ITEM_SLOT_XL = 12
 # 6-key (Stream Deck Mini) deck constants.
 #   Row 0:  Back       Playlists   Next
 #   Row 1:  Vol -      Play/Stop   Vol +
@@ -99,6 +101,7 @@ _SLOT_INT_FIELDS = {
     ),
     "feed_confirm": ("back", "confirm"),
     "music_playlists": ("back", "next"),
+    "item_focus": ("slot",),
 }
 _SLOT_LIST_FIELDS = {
     "music_focus": ("accounts",),
@@ -462,6 +465,11 @@ class HomeActionDispatcher:
 
     def reserved_slot_map_for(self, device: str, key_count: int) -> dict[int, str]:
         return self.reserved_slot_map(key_count)
+
+    def item_focus_slot(self, deck_key_count: int) -> int:
+        default = FOCUS_ITEM_SLOT_XL if _is_xl_deck(deck_key_count) else FOCUS_ITEM_SLOT_15
+        override = self._slots.get("item_focus") or {}
+        return override.get("slot", default)
 
     def reserved_slot_config(self, kind: str) -> dict | None:
         if kind == "water":
