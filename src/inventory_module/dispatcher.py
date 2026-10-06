@@ -109,6 +109,41 @@ _SLOT_LIST_FIELDS = {
 }
 
 
+def _is_nonneg_slot_int(v: Any) -> bool:
+    # Viam serializes JSON numbers through protobuf Struct, which arrive as
+    # float even when the source JSON was an integer literal (1 → 1.0). Accept
+    # whole-number floats; reject bools (bool is a subclass of int).
+    if isinstance(v, bool):
+        return False
+    if isinstance(v, int):
+        return v >= 0
+    if isinstance(v, float):
+        return v.is_integer() and v >= 0
+    return False
+
+
+def _normalize_slots(slots: Mapping) -> dict:
+    # _validate_slots lets whole-number floats through; coerce to int here so
+    # downstream dict keys built from these values (e.g. {transport_base+0: ...})
+    # don't end up as float keys and ship the wrong type to the streamdeck.
+    out: dict = {}
+    for group, group_val in slots.items():
+        if not isinstance(group_val, Mapping):
+            continue
+        normalized: dict = {}
+        for key, val in group_val.items():
+            if isinstance(val, float) and val.is_integer():
+                normalized[key] = int(val)
+            elif isinstance(val, list):
+                normalized[key] = [
+                    int(x) if isinstance(x, float) and x.is_integer() else x for x in val
+                ]
+            else:
+                normalized[key] = val
+        out[group] = normalized
+    return out
+
+
 def _validate_slots(slots: Any) -> None:
     if not isinstance(slots, Mapping):
         raise ValueError("`slots` must be an object")
@@ -118,17 +153,12 @@ def _validate_slots(slots: Any) -> None:
         if not isinstance(group_val, Mapping):
             raise ValueError(f"`slots.{group}` must be an object")
         for name in _SLOT_INT_FIELDS.get(group, ()):
-            if name in group_val and not (
-                isinstance(group_val[name], int) and not isinstance(group_val[name], bool)
-                and group_val[name] >= 0
-            ):
+            if name in group_val and not _is_nonneg_slot_int(group_val[name]):
                 raise ValueError(f"`slots.{group}.{name}` must be a non-negative int")
         for name in _SLOT_LIST_FIELDS.get(group, ()):
             if name in group_val:
                 val = group_val[name]
-                if not isinstance(val, list) or not all(
-                    isinstance(x, int) and not isinstance(x, bool) and x >= 0 for x in val
-                ):
+                if not isinstance(val, list) or not all(_is_nonneg_slot_int(x) for x in val):
                     raise ValueError(f"`slots.{group}.{name}` must be a list of non-negative ints")
 
 
@@ -183,7 +213,7 @@ class HomeActionDispatcher:
         self._thermostat_switch_name = str(attrs.get("thermostat_switch") or "")
         self._music_name = str(attrs.get("music") or "")  # TECH DEBT — see top of file.
         self._manual_water_ml = int(attrs.get("manual_water_ml") or DEFAULT_MANUAL_WATER_ML)
-        self._slots = dict(attrs.get("slots") or {})
+        self._slots = _normalize_slots(attrs.get("slots") or {})
 
         self._waterer = None
         self._feeder = None
