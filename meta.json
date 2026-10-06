@@ -11,5 +11,10 @@
         }
     ],
     "entrypoint": "run.sh",
-    "first_run": ""
+    "first_run": "",
+    "build": {
+        "build": "tar -czf module.tar.gz src run.sh meta.json pyproject.toml",
+        "path": "module.tar.gz",
+        "arch": ["linux/arm64"]
+    }
 }
