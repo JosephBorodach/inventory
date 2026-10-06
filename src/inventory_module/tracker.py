@@ -782,6 +782,16 @@ class Tracker(Generic):
                 if not isinstance(item_id, str) or not item_id:
                     raise ValueError("every entry in `order` must be a non-empty string id")
                 self._require_item(item_id)
+            reserved = (
+                self._dispatcher.reserved_slot_map_for(device, key_count)
+                if key_count is not None else {}
+            )
+            available = [s for s in range(key_count or len(order)) if s not in reserved]
+            if len(order) > len(available):
+                raise ValueError(
+                    f"`order` has {len(order)} ids but device {device!r} only has "
+                    f"{len(available)} non-reserved slots"
+                )
             keep = set(order)
             now = _now_iso()
             for item in self._state["items"]:
@@ -789,9 +799,9 @@ class Tracker(Generic):
                 if b and b.get("device") == device and item.get("id") not in keep:
                     item["button"] = None
                     item["updated_at"] = now
-            for slot, item_id in enumerate(order):
+            for idx, item_id in enumerate(order):
                 item = self._require_item(item_id)
-                item["button"] = {"device": device, "slot": slot}
+                item["button"] = {"device": device, "slot": available[idx]}
                 item["updated_at"] = now
             self._save_state()
         await self._push_state_snapshot()
@@ -830,6 +840,15 @@ class Tracker(Generic):
     # -- do_command --------------------------------------------------
 
     async def _status(self) -> dict:
+        devices_out = []
+        for d in self._devices:
+            entry = {k: v for k, v in d.items() if v is not None}
+            key_count = d.get("key_count")
+            if key_count is not None:
+                reserved = self._dispatcher.reserved_slot_map_for(d["name"], key_count)
+                if reserved:
+                    entry["reserved_slots"] = {str(k): v for k, v in reserved.items()}
+            devices_out.append(entry)
         return {
             "kind": "inventory_tracker",
             "state_sensor": self._state_sensor_name,
@@ -837,10 +856,7 @@ class Tracker(Generic):
             "streamdeck": self._deck.streamdeck_name or None,
             "deck_key_count": self._deck.key_count,
             "item_count": len(self._state["items"]),
-            "devices": [
-                {k: v for k, v in d.items() if v is not None}
-                for d in self._devices
-            ],
+            "devices": devices_out,
         }
 
     async def do_command(
