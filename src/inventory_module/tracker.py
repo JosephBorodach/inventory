@@ -837,6 +837,10 @@ class Tracker(Generic):
             "streamdeck": self._deck.streamdeck_name or None,
             "deck_key_count": self._deck.key_count,
             "item_count": len(self._state["items"]),
+            "devices": [
+                {k: v for k, v in d.items() if v is not None}
+                for d in self._devices
+            ],
         }
 
     async def do_command(
