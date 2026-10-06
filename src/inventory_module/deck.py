@@ -18,7 +18,6 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_DECK_KEY_COUNT = 15
 DEFAULT_DECK_REFRESH_SEC = 30
 DEFAULT_FOCUS_TIMEOUT_SEC = 60.0
-FOCUS_ITEM_SLOT = 7
 MUSIC_FOCUS_TIMEOUT_SEC = 60.0  # TECH DEBT — see dispatcher.py top-of-file banner.
 PLAYLISTS_FOCUS_TIMEOUT_SEC = 60.0  # TECH DEBT — see dispatcher.py top-of-file banner.
 FEED_CONFIRM_TIMEOUT_SEC = 15.0
@@ -435,7 +434,7 @@ class DeckRenderer:
 
     def _focus_layout(self, item: dict) -> dict[str, dict]:
         # Clamp so −/+/item still fit on smaller decks.
-        item_slot = min(FOCUS_ITEM_SLOT, self._deck_key_count - 1)
+        item_slot = min(self._dispatcher.item_focus_slot(self._deck_key_count), self._deck_key_count - 1)
         minus_slot = max(0, item_slot - 1)
         plus_slot = min(self._deck_key_count - 1, item_slot + 1)
         keys: dict[str, dict] = {}
