@@ -92,7 +92,11 @@ def _playlists_per_page(deck_key_count: int) -> int:
 
 
 _SLOT_INT_FIELDS = {
-    "music_focus": ("transport_base", "playlists"),
+    "music_focus": (
+        "transport_base", "playlists",
+        "mini_back", "mini_playlists", "mini_next",
+        "mini_vol_down", "mini_play_stop", "mini_vol_up",
+    ),
     "feed_confirm": ("back", "confirm"),
     "music_playlists": ("back", "next"),
 }
@@ -583,7 +587,11 @@ class HomeActionDispatcher:
         }
 
         if _is_mini_deck(deck_key_count):
-            s = MUSIC_FOCUS_SLOTS_6
+            mini_override = self._slots.get("music_focus") or {}
+            s = {
+                role: mini_override.get(f"mini_{role}", default)
+                for role, default in MUSIC_FOCUS_SLOTS_6.items()
+            }
             return {
                 s["back"]: back,
                 s["playlists"]: playlists,

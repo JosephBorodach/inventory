@@ -39,11 +39,13 @@ class DeckRenderer:
         items_getter: Callable[[], list[dict]],
         find_item: Callable[[str], dict | None],
         dispatcher: HomeActionDispatcher,
+        devices_getter: Callable[[], list[dict]] | None = None,
     ) -> None:
         self._component_name = component_name
         self._items_getter = items_getter
         self._find_item = find_item
         self._dispatcher = dispatcher
+        self._devices_getter = devices_getter or (lambda: [])
         self._streamdeck: GenericService | None = None
         self._streamdeck_name: str = ""
         self._deck_key_count: int = DEFAULT_DECK_KEY_COUNT
@@ -406,8 +408,16 @@ class DeckRenderer:
         cfg["text_color"] = ""
         return cfg
 
+    def _owning_device_name(self) -> str:
+        for d in self._devices_getter():
+            if d.get("streamdeck") == self._streamdeck_name:
+                name = d.get("name")
+                if isinstance(name, str) and name:
+                    return name
+        return "kitchen"
+
     def _main_layout(self) -> dict[str, dict]:
-        slotted = self._slotted_items("kitchen")
+        slotted = self._slotted_items(self._owning_device_name())
         reserved = self._dispatcher.reserved_slot_map(self._deck_key_count)
         keys: dict[str, dict] = {}
         for slot in range(self._deck_key_count):
