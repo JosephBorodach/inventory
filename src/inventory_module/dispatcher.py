@@ -43,6 +43,12 @@ MUSIC_FOCUS_ACCOUNT_SLOTS_15 = (1, 3)
 MUSIC_PLAYLISTS_BACK_SLOT_15 = 10
 MUSIC_PLAYLISTS_NEXT_SLOT_15 = 14
 MUSIC_PLAYLISTS_CONTENT_SLOTS_15 = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13)
+# 32-key (Stream Deck XL, 4x8) deck constants. Cluster centered on cols 2-6.
+MUSIC_FOCUS_BASE_XL = 18
+MUSIC_FOCUS_PLAYLISTS_SLOT_XL = 12
+MUSIC_FOCUS_ACCOUNT_SLOTS_XL = (11, 13)
+FEED_CONFIRM_BACK_SLOT_XL = 19
+FEED_CONFIRM_CONFIRM_SLOT_XL = 20
 # 6-key (Stream Deck Mini) deck constants.
 #   Row 0:  Back       Playlists   Next
 #   Row 1:  Vol -      Play/Stop   Vol +
@@ -62,6 +68,10 @@ DEFAULT_MANUAL_WATER_ML = 50
 # TECH DEBT — see top of file.
 def _is_mini_deck(deck_key_count: int) -> bool:
     return deck_key_count < 10
+
+
+def _is_xl_deck(deck_key_count: int) -> bool:
+    return deck_key_count >= 24
 
 
 # TECH DEBT — see top of file.
@@ -432,8 +442,12 @@ class HomeActionDispatcher:
         }
 
     def feed_confirm_key_configs(self, deck_key_count: int) -> dict[int, dict]:
-        back_slot = deck_key_count - RESERVED_WATER_OFFSET
-        confirm_slot = deck_key_count - RESERVED_FEED_OFFSET
+        if _is_xl_deck(deck_key_count):
+            back_slot = FEED_CONFIRM_BACK_SLOT_XL
+            confirm_slot = FEED_CONFIRM_CONFIRM_SLOT_XL
+        else:
+            back_slot = deck_key_count - RESERVED_WATER_OFFSET
+            confirm_slot = deck_key_count - RESERVED_FEED_OFFSET
         return {
             back_slot: {
                 "text": "Back",
@@ -526,19 +540,26 @@ class HomeActionDispatcher:
                 s["vol_up"]: vol_up,
             }
 
-        # 15-key default: center row for transport, top row for playlists/accounts.
-        base = 5
+        if _is_xl_deck(deck_key_count):
+            base = MUSIC_FOCUS_BASE_XL
+            playlists_slot = MUSIC_FOCUS_PLAYLISTS_SLOT_XL
+            account_slots = MUSIC_FOCUS_ACCOUNT_SLOTS_XL
+        else:
+            base = 5
+            playlists_slot = MUSIC_FOCUS_PLAYLISTS_SLOT_15
+            account_slots = MUSIC_FOCUS_ACCOUNT_SLOTS_15
+
         out: dict[int, dict] = {
             base + 0: back,
             base + 1: vol_down,
             base + 2: play_stop,
             base + 3: vol_up,
             base + 4: next_track,
-            MUSIC_FOCUS_PLAYLISTS_SLOT_15: playlists,
+            playlists_slot: playlists,
         }
         if len(self._music_accounts) >= 2:
             for slot, account in zip(
-                MUSIC_FOCUS_ACCOUNT_SLOTS_15, self._music_accounts[:2], strict=False
+                account_slots, self._music_accounts[:2], strict=False
             ):
                 is_active = account == self._music_active_account
                 out[slot] = {
