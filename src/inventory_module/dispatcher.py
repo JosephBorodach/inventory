@@ -49,6 +49,9 @@ MUSIC_FOCUS_PLAYLISTS_SLOT_XL = 12
 MUSIC_FOCUS_ACCOUNT_SLOTS_XL = (11, 13)
 FEED_CONFIRM_BACK_SLOT_XL = 19
 FEED_CONFIRM_CONFIRM_SLOT_XL = 20
+MUSIC_PLAYLISTS_CONTENT_SLOTS_XL = (8, 9, 10, 11, 12, 13, 14, 15)
+MUSIC_PLAYLISTS_BACK_SLOT_XL = 18
+MUSIC_PLAYLISTS_NEXT_SLOT_XL = 22
 # 6-key (Stream Deck Mini) deck constants.
 #   Row 0:  Back       Playlists   Next
 #   Row 1:  Vol -      Play/Stop   Vol +
@@ -88,6 +91,40 @@ def _playlists_per_page(deck_key_count: int) -> int:
     return MUSIC_PLAYLISTS_PER_PAGE_15
 
 
+_SLOT_INT_FIELDS = {
+    "music_focus": ("transport_base", "playlists"),
+    "feed_confirm": ("back", "confirm"),
+    "music_playlists": ("back", "next"),
+}
+_SLOT_LIST_FIELDS = {
+    "music_focus": ("accounts",),
+    "music_playlists": ("content",),
+}
+
+
+def _validate_slots(slots: Any) -> None:
+    if not isinstance(slots, Mapping):
+        raise ValueError("`slots` must be an object")
+    for group, group_val in slots.items():
+        if group not in _SLOT_INT_FIELDS and group not in _SLOT_LIST_FIELDS:
+            raise ValueError(f"`slots.{group}` is not a recognized group")
+        if not isinstance(group_val, Mapping):
+            raise ValueError(f"`slots.{group}` must be an object")
+        for name in _SLOT_INT_FIELDS.get(group, ()):
+            if name in group_val and not (
+                isinstance(group_val[name], int) and not isinstance(group_val[name], bool)
+                and group_val[name] >= 0
+            ):
+                raise ValueError(f"`slots.{group}.{name}` must be a non-negative int")
+        for name in _SLOT_LIST_FIELDS.get(group, ()):
+            if name in group_val:
+                val = group_val[name]
+                if not isinstance(val, list) or not all(
+                    isinstance(x, int) and not isinstance(x, bool) and x >= 0 for x in val
+                ):
+                    raise ValueError(f"`slots.{group}.{name}` must be a list of non-negative ints")
+
+
 class HomeActionDispatcher:
     def __init__(self, component_name: str) -> None:
         self._component_name = component_name
@@ -109,6 +146,7 @@ class HomeActionDispatcher:
         self._music_active_account: str = ""
         self._manual_water_ml: int = DEFAULT_MANUAL_WATER_ML
         self._thermostat_on: bool | None = None
+        self._slots: dict = {}
 
     @staticmethod
     def validate_config_attrs(attrs: dict) -> list[str]:
@@ -127,6 +165,9 @@ class HomeActionDispatcher:
             or manual_water_ml <= 0
         ):
             raise ValueError("`manual_water_ml` must be a positive integer")
+        slots = attrs.get("slots")
+        if slots is not None:
+            _validate_slots(slots)
         return optional
 
     def reconfigure(self, attrs: dict, dependencies: Mapping[ResourceName, ResourceBase]) -> None:
@@ -135,6 +176,7 @@ class HomeActionDispatcher:
         self._thermostat_switch_name = str(attrs.get("thermostat_switch") or "")
         self._music_name = str(attrs.get("music") or "")  # TECH DEBT — see top of file.
         self._manual_water_ml = int(attrs.get("manual_water_ml") or DEFAULT_MANUAL_WATER_ML)
+        self._slots = dict(attrs.get("slots") or {})
 
         self._waterer = None
         self._feeder = None
@@ -335,8 +377,16 @@ class HomeActionDispatcher:
         return result
 
     # TECH DEBT — see top of file.
+    def _music_playlists_per_page(self, deck_key_count: int) -> int:
+        override = self._slots.get("music_playlists") or {}
+        content = override.get("content")
+        if isinstance(content, list):
+            return len(content) or 1
+        return _playlists_per_page(deck_key_count)
+
+    # TECH DEBT — see top of file.
     def music_playlists_page_count(self, deck_key_count: int) -> int:
-        per_page = _playlists_per_page(deck_key_count)
+        per_page = self._music_playlists_per_page(deck_key_count)
         n = len(self._music_playlists)
         if n == 0:
             return 1
@@ -443,11 +493,14 @@ class HomeActionDispatcher:
 
     def feed_confirm_key_configs(self, deck_key_count: int) -> dict[int, dict]:
         if _is_xl_deck(deck_key_count):
-            back_slot = FEED_CONFIRM_BACK_SLOT_XL
-            confirm_slot = FEED_CONFIRM_CONFIRM_SLOT_XL
+            default_back = FEED_CONFIRM_BACK_SLOT_XL
+            default_confirm = FEED_CONFIRM_CONFIRM_SLOT_XL
         else:
-            back_slot = deck_key_count - RESERVED_WATER_OFFSET
-            confirm_slot = deck_key_count - RESERVED_FEED_OFFSET
+            default_back = deck_key_count - RESERVED_WATER_OFFSET
+            default_confirm = deck_key_count - RESERVED_FEED_OFFSET
+        override = self._slots.get("feed_confirm") or {}
+        back_slot = override.get("back", default_back)
+        confirm_slot = override.get("confirm", default_confirm)
         return {
             back_slot: {
                 "text": "Back",
@@ -541,13 +594,17 @@ class HomeActionDispatcher:
             }
 
         if _is_xl_deck(deck_key_count):
-            base = MUSIC_FOCUS_BASE_XL
-            playlists_slot = MUSIC_FOCUS_PLAYLISTS_SLOT_XL
-            account_slots = MUSIC_FOCUS_ACCOUNT_SLOTS_XL
+            default_base = MUSIC_FOCUS_BASE_XL
+            default_playlists = MUSIC_FOCUS_PLAYLISTS_SLOT_XL
+            default_accounts = MUSIC_FOCUS_ACCOUNT_SLOTS_XL
         else:
-            base = 5
-            playlists_slot = MUSIC_FOCUS_PLAYLISTS_SLOT_15
-            account_slots = MUSIC_FOCUS_ACCOUNT_SLOTS_15
+            default_base = 5
+            default_playlists = MUSIC_FOCUS_PLAYLISTS_SLOT_15
+            default_accounts = MUSIC_FOCUS_ACCOUNT_SLOTS_15
+        override = self._slots.get("music_focus") or {}
+        base = override.get("transport_base", default_base)
+        playlists_slot = override.get("playlists", default_playlists)
+        account_slots = tuple(override.get("accounts", default_accounts))
 
         out: dict[int, dict] = {
             base + 0: back,
@@ -575,15 +632,22 @@ class HomeActionDispatcher:
     # TECH DEBT — see top of file.
     def music_playlists_key_configs(self, deck_key_count: int) -> dict[int, dict]:
         if _is_mini_deck(deck_key_count):
-            content_slots = MUSIC_PLAYLISTS_CONTENT_SLOTS_6
-            back_slot = MUSIC_PLAYLISTS_BACK_SLOT_6
-            next_slot = MUSIC_PLAYLISTS_NEXT_SLOT_6
-            per_page = MUSIC_PLAYLISTS_PER_PAGE_6
+            default_content = MUSIC_PLAYLISTS_CONTENT_SLOTS_6
+            default_back = MUSIC_PLAYLISTS_BACK_SLOT_6
+            default_next = MUSIC_PLAYLISTS_NEXT_SLOT_6
+        elif _is_xl_deck(deck_key_count):
+            default_content = MUSIC_PLAYLISTS_CONTENT_SLOTS_XL
+            default_back = MUSIC_PLAYLISTS_BACK_SLOT_XL
+            default_next = MUSIC_PLAYLISTS_NEXT_SLOT_XL
         else:
-            content_slots = MUSIC_PLAYLISTS_CONTENT_SLOTS_15
-            back_slot = MUSIC_PLAYLISTS_BACK_SLOT_15
-            next_slot = MUSIC_PLAYLISTS_NEXT_SLOT_15
-            per_page = MUSIC_PLAYLISTS_PER_PAGE_15
+            default_content = MUSIC_PLAYLISTS_CONTENT_SLOTS_15
+            default_back = MUSIC_PLAYLISTS_BACK_SLOT_15
+            default_next = MUSIC_PLAYLISTS_NEXT_SLOT_15
+        override = self._slots.get("music_playlists") or {}
+        content_slots = tuple(override.get("content", default_content))
+        back_slot = override.get("back", default_back)
+        next_slot = override.get("next", default_next)
+        per_page = len(content_slots)
         page_count = self.music_playlists_page_count(deck_key_count)
         page = max(0, min(self._music_playlists_page, page_count - 1))
         start = page * per_page
