@@ -454,7 +454,7 @@ def _threshold_color(item: dict) -> str | None:
     if threshold is None:
         return None
     qty = int(item.get("quantity") or 0)
-    return "seagreen" if qty > threshold else "red"
+    return None if qty > threshold else "red"
 
 
 def _item_color(item: dict) -> str | None:
