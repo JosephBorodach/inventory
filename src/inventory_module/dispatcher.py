@@ -397,9 +397,6 @@ class HomeActionDispatcher:
         return reserved
 
     def reserved_slot_map_for(self, device: str, key_count: int) -> dict[int, str]:
-        # Reserved home-action keys live on the kitchen deck only.
-        if device != "kitchen":
-            return {}
         return self.reserved_slot_map(key_count)
 
     def reserved_slot_config(self, kind: str) -> dict | None:
