@@ -365,15 +365,17 @@ class DeckRenderer:
         name = item.get("name", "")
         has_supply = item.get("package_qty") is not None
         text = f"{name} {int(item.get('quantity') or 0)}" if has_supply else name
+        # Streamdeck merges key updates rather than replacing, so when color
+        # is None we must explicitly clear it — otherwise a prior red/green
+        # from this slot's last render sticks.
         cfg: dict[str, Any] = {
             "text": text,
+            "color": color if color is not None else "",
+            "text_color": "white" if color is not None else "",
             "component": self._component_name,
             "method": "do_command",
             "args": [{"command": "press", "id": item["id"]}],
         }
-        if color is not None:
-            cfg["color"] = color
-            cfg["text_color"] = "white"
         return cfg
 
     def _empty_slot(self) -> dict:
@@ -471,5 +473,5 @@ def _item_color(item: dict) -> str | None:
                 )
             except ValueError:
                 actionable = True
-        return "seagreen" if actionable else "gray"
+        return "seagreen" if actionable else None
     return _threshold_color(item)
