@@ -30,6 +30,7 @@ RESERVED_WATER_OFFSET = 3
 RESERVED_FEED_OFFSET = 2
 RESERVED_THERMOSTAT_OFFSET = 1
 RESERVED_MUSIC_OFFSET = 4  # TECH DEBT — see top of file.
+RESERVED_LIGHT_OFFSET = 5
 # Spotify's GET /me/player lags ~1-2s behind PUT /me/player/{play,pause}.
 # Trust the optimistic post-mutation state for this long before letting a
 # background refresh overwrite it.
@@ -183,13 +184,16 @@ class HomeActionDispatcher:
         self._music_active_account: str = ""
         self._manual_water_ml: int = DEFAULT_MANUAL_WATER_ML
         self._thermostat_on: bool | None = None
+        self._light: GenericService | None = None
+        self._light_name: str = ""
+        self._light_on: bool | None = None
         self._slots: dict = {}
 
     @staticmethod
     def validate_config_attrs(attrs: dict) -> list[str]:
         optional: list[str] = []
         # `music` is TECH DEBT — see top of file.
-        for key in ("waterer", "feeder", "thermostat_switch", "music"):
+        for key in ("waterer", "feeder", "thermostat_switch", "music", "light"):
             val = attrs.get(key)
             if val is not None:
                 if not isinstance(val, str) or not val:
@@ -212,6 +216,7 @@ class HomeActionDispatcher:
         self._feeder_name = str(attrs.get("feeder") or "")
         self._thermostat_switch_name = str(attrs.get("thermostat_switch") or "")
         self._music_name = str(attrs.get("music") or "")  # TECH DEBT — see top of file.
+        self._light_name = str(attrs.get("light") or "")
         self._manual_water_ml = int(attrs.get("manual_water_ml") or DEFAULT_MANUAL_WATER_ML)
         self._slots = _normalize_slots(attrs.get("slots") or {})
 
@@ -219,6 +224,7 @@ class HomeActionDispatcher:
         self._feeder = None
         self._thermostat_switch = None
         self._music = None  # TECH DEBT — see top of file.
+        self._light = None
         for name, resource in dependencies.items():
             if (
                 self._waterer_name
@@ -245,6 +251,12 @@ class HomeActionDispatcher:
                 and isinstance(resource, Generic | GenericService)
             ):
                 self._music = resource
+            elif (
+                self._light_name
+                and name.name == self._light_name
+                and isinstance(resource, Generic | GenericService)
+            ):
+                self._light = resource
 
         if self._waterer_name and self._waterer is None:
             LOGGER.warning(
@@ -270,6 +282,12 @@ class HomeActionDispatcher:
                 "reserved music keys disabled",
                 self._music_name,
             )
+        if self._light_name and self._light is None:
+            LOGGER.warning(
+                "light %r not resolved (need Generic component or service); "
+                "reserved light key disabled",
+                self._light_name,
+            )
 
     async def water_manual(self, _payload: Any) -> dict:
         if self._waterer is None:
@@ -291,6 +309,18 @@ class HomeActionDispatcher:
         await self._thermostat_switch.set_position(new_pos)
         self._thermostat_on = new_pos == 1
         return {"ok": True, "position": new_pos}
+
+    async def light_toggle(self, _payload: Any) -> dict:
+        if self._light is None:
+            raise RuntimeError("no light configured")
+        on = self._light_on
+        if on is None:
+            await self.refresh_light_state()
+            on = bool(self._light_on)
+        target = not on
+        await self._light.do_command({"command": "set", "on": target})
+        self._light_on = target
+        return {"ok": True, "on": target}
 
     # TECH DEBT — see top of file.
     async def music_play(self, _payload: Any) -> dict:
@@ -479,6 +509,22 @@ class HomeActionDispatcher:
             return
         self._thermostat_on = pos == 1
 
+    async def refresh_light_state(self) -> None:
+        if self._light is None:
+            self._light_on = None
+            return
+        try:
+            status = await self._light.do_command({"command": "status"})
+        except Exception as e:
+            LOGGER.warning("light state read failed: %s", e)
+            return
+        if isinstance(status, Mapping):
+            readings = status.get("readings")
+            if isinstance(readings, Mapping):
+                state = readings.get("state")
+                if isinstance(state, str):
+                    self._light_on = state.upper() == "ON"
+
     def reserved_slot_map(self, deck_key_count: int) -> dict[int, str]:
         # Count back from the end so slots always sit on the bottom-right.
         reserved: dict[int, str] = {}
@@ -491,6 +537,8 @@ class HomeActionDispatcher:
         # TECH DEBT — see top of file. Mini decks anchor Music top-left.
         if self._music is not None:
             reserved[_music_slot(deck_key_count)] = "music"
+        if self._light is not None:
+            reserved[deck_key_count - RESERVED_LIGHT_OFFSET] = "light"
         return reserved
 
     def reserved_slot_map_for(self, device: str, key_count: int) -> dict[int, str]:
@@ -511,6 +559,8 @@ class HomeActionDispatcher:
         # TECH DEBT — see top of file.
         if kind == "music":
             return self._music_key_config()
+        if kind == "light":
+            return self._light_key_config()
         return None
 
     def _water_key_config(self) -> dict:
@@ -573,6 +623,18 @@ class HomeActionDispatcher:
             "component": self._component_name,
             "method": "do_command",
             "args": [{"command": "thermostat_toggle"}],
+        }
+
+    def _light_key_config(self) -> dict:
+        on = bool(self._light_on)
+        target_on = not on
+        return {
+            "text": "Lights ON" if target_on else "Lights OFF",
+            "color": "seagreen" if target_on else "",
+            "text_color": "white" if target_on else "",
+            "component": self._component_name,
+            "method": "do_command",
+            "args": [{"command": "light_toggle"}],
         }
 
     # TECH DEBT — see top of file.
