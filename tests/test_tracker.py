@@ -29,6 +29,20 @@ class RecordingSwitch:
         self.position = position
 
 
+class RecordingLight:
+    def __init__(self, on: bool = False):
+        self.on = on
+        self.commands: list[dict] = []
+
+    async def do_command(self, cmd, **kwargs):
+        self.commands.append(cmd)
+        if cmd.get("command") == "status":
+            return {"readings": {"state": "ON" if self.on else "OFF"}}
+        if cmd.get("command") == "set" and "on" in cmd:
+            self.on = bool(cmd["on"])
+        return {"ok": True}
+
+
 def _make(
     tmp_path: Path,
     with_events: bool = False,
@@ -593,6 +607,8 @@ def _with_reserved(
     feeder=True,
     thermostat=True,
     thermostat_position: int = 0,
+    light=False,
+    light_on: bool = False,
     manual_water_ml: int = 50,
 ):
     t, _, _, deck = _make(tmp_path, with_streamdeck=True)
@@ -606,6 +622,9 @@ def _with_reserved(
     if thermostat:
         d._thermostat_switch = RecordingSwitch(position=thermostat_position)
         d._thermostat_switch_name = "thermostat"
+    if light:
+        d._light = RecordingLight(on=light_on)
+        d._light_name = "bedroom-lamp"
     d._manual_water_ml = manual_water_ml
     return t, deck
 
@@ -716,6 +735,62 @@ async def test_do_command_wires_new_verbs(tmp_path):
     assert r["ok"] is True
     r = await t.do_command({"command": "thermostat_toggle"})
     assert r["position"] == 1
+
+
+# -- reserved slot: light ----------------------------------------------
+
+
+async def test_light_slot_off_shows_turn_on_action(tmp_path):
+    t, deck = _with_reserved(
+        tmp_path, waterer=False, feeder=False, thermostat=False, light=True, light_on=False,
+    )
+    await t._deck.push_layout()
+    keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
+    # Slot 10 on a 15-key deck (15 - RESERVED_LIGHT_OFFSET=5).
+    assert keys["10"]["text"] == "Lights ON"
+    assert keys["10"]["color"] == "seagreen"
+    assert keys["10"]["text_color"] == "white"
+    assert keys["10"]["args"][0] == {"command": "light_toggle"}
+
+
+async def test_light_slot_on_shows_turn_off_action(tmp_path):
+    t, deck = _with_reserved(
+        tmp_path, waterer=False, feeder=False, thermostat=False, light=True, light_on=True,
+    )
+    await t._deck.push_layout()
+    keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
+    assert keys["10"]["text"] == "Lights OFF"
+    assert keys["10"]["color"] == ""
+
+
+async def test_light_toggle_sends_set_with_flipped_state(tmp_path):
+    t, deck = _with_reserved(
+        tmp_path, waterer=False, feeder=False, thermostat=False, light=True, light_on=False,
+    )
+    # Prime state; otherwise light_toggle would read status first.
+    t._dispatcher._light_on = False
+    resp = await t._light_toggle_and_repaint({})
+    assert resp["on"] is True
+    assert {"command": "set", "on": True} in t._dispatcher._light.commands
+    # Repaint shows the action to go back (now on → "Lights OFF").
+    keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
+    assert keys["10"]["text"] == "Lights OFF"
+
+
+async def test_light_toggle_verb_wired_through_do_command(tmp_path):
+    t, _ = _with_reserved(
+        tmp_path, waterer=False, feeder=False, thermostat=False, light=True, light_on=True,
+    )
+    t._dispatcher._light_on = True
+    r = await t.do_command({"command": "light_toggle"})
+    assert r["on"] is False
+
+
+async def test_light_absent_when_no_dep(tmp_path):
+    t, deck = _with_reserved(tmp_path, waterer=False, feeder=False, thermostat=False)
+    await t._deck.push_layout()
+    keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
+    assert keys["10"]["text"] == " "
 
 
 # -- reorder_deck ------------------------------------------------------
