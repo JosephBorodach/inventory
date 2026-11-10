@@ -651,6 +651,21 @@ class Tracker(Generic):
 
     async def _light_toggle_and_repaint(self, payload: Any) -> dict:
         result = await self._dispatcher.light_toggle(payload)
+        self._deck.rearm_light_controls_timer()
+        await self._deck.push_layout()
+        return result
+
+    async def _light_show_controls(self) -> dict:
+        await self._deck.enter_light_controls()
+        return {"ok": True}
+
+    async def _light_cancel(self) -> dict:
+        await self._deck.exit_light_controls()
+        return {"ok": True}
+
+    async def _light_set_preset_and_repaint(self, payload: Any) -> dict:
+        result = await self._dispatcher.light_set_preset(payload)
+        self._deck.rearm_light_controls_timer()
         await self._deck.push_layout()
         return result
 
@@ -914,6 +929,12 @@ class Tracker(Generic):
             return await self._thermostat_toggle_and_repaint(command)
         if verb == "light_toggle":
             return await self._light_toggle_and_repaint(command)
+        if verb == "light_show_controls":
+            return await self._light_show_controls()
+        if verb == "light_cancel":
+            return await self._light_cancel()
+        if verb == "light_set_preset":
+            return await self._light_set_preset_and_repaint(command)
         # TECH DEBT — music verbs live here only because inventory owns the deck.
         # Move to joseph:spotify when per-component streamdeck ownership lands.
         if verb == "music_play":
