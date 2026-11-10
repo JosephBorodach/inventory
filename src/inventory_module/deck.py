@@ -21,6 +21,7 @@ DEFAULT_FOCUS_TIMEOUT_SEC = 60.0
 MUSIC_FOCUS_TIMEOUT_SEC = 60.0  # TECH DEBT — see dispatcher.py top-of-file banner.
 PLAYLISTS_FOCUS_TIMEOUT_SEC = 60.0  # TECH DEBT — see dispatcher.py top-of-file banner.
 FEED_CONFIRM_TIMEOUT_SEC = 15.0
+LIGHT_CONTROLS_TIMEOUT_SEC = 15.0
 
 
 def validate_deck_key_count(attrs: dict) -> None:
@@ -61,6 +62,8 @@ class DeckRenderer:
         self._playlists_focus_timer_task: asyncio.Task | None = None
         self._feed_confirm_focused: bool = False
         self._feed_confirm_timer_task: asyncio.Task | None = None
+        self._light_controls_focused: bool = False
+        self._light_controls_timer_task: asyncio.Task | None = None
 
     @staticmethod
     def validate_config_attrs(attrs: dict) -> list[str]:
@@ -127,11 +130,13 @@ class DeckRenderer:
             self._exit_playlists_focus()
             self._feed_confirm_focused = False
             self._cancel_feed_confirm_timer()
+            self._exit_light_controls()
         if (
             focused is None
             and not self._music_focused
             and not self._playlists_focused
             and not self._feed_confirm_focused
+            and not self._light_controls_focused
         ):
             await self._dispatcher.refresh_thermostat_state()
             await self._dispatcher.refresh_music_state()
@@ -140,6 +145,8 @@ class DeckRenderer:
             keys = self._focus_layout(focused)
         elif self._feed_confirm_focused:
             keys = self._feed_confirm_layout()
+        elif self._light_controls_focused:
+            keys = self._light_controls_layout()
         elif self._playlists_focused:
             keys = self._playlists_focus_layout()
         elif self._music_focused:
@@ -350,6 +357,58 @@ class DeckRenderer:
         self._feed_confirm_focused = False
         self._cancel_feed_confirm_timer()
         await self.push_layout()
+
+    def _cancel_light_controls_timer(self) -> None:
+        if self._light_controls_timer_task and not self._light_controls_timer_task.done():
+            self._light_controls_timer_task.cancel()
+        self._light_controls_timer_task = None
+
+    def _arm_light_controls_timer(self) -> None:
+        self._cancel_light_controls_timer()
+        with contextlib.suppress(RuntimeError):
+            self._light_controls_timer_task = asyncio.create_task(
+                self._light_controls_timeout_loop()
+            )
+
+    async def _light_controls_timeout_loop(self) -> None:
+        try:
+            await asyncio.sleep(LIGHT_CONTROLS_TIMEOUT_SEC)
+        except asyncio.CancelledError:
+            return
+        self._light_controls_focused = False
+        await self.push_layout()
+
+    def _light_controls_layout(self) -> dict[str, dict]:
+        keys: dict[str, dict] = {}
+        for slot in range(self._deck_key_count):
+            keys[str(slot)] = self._empty_slot()
+        for slot, cfg in self._dispatcher.light_controls_key_configs(self._deck_key_count).items():
+            keys[str(slot)] = cfg
+        return keys
+
+    async def enter_light_controls(self) -> None:
+        self._light_controls_focused = True
+        self._focus_item_id = None
+        self._cancel_focus_timer()
+        self._exit_music_focus()
+        self._exit_playlists_focus()
+        self._feed_confirm_focused = False
+        self._cancel_feed_confirm_timer()
+        await self._dispatcher.refresh_light_state()
+        self._arm_light_controls_timer()
+        await self.push_layout()
+
+    async def exit_light_controls(self) -> None:
+        self._exit_light_controls()
+        await self.push_layout()
+
+    def _exit_light_controls(self) -> None:
+        self._light_controls_focused = False
+        self._cancel_light_controls_timer()
+
+    def rearm_light_controls_timer(self) -> None:
+        if self._light_controls_focused:
+            self._arm_light_controls_timer()
 
     def _slotted_items(self, device: str = "kitchen") -> dict[int, dict]:
         out: dict[int, dict] = {}

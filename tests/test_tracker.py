@@ -610,8 +610,9 @@ def _with_reserved(
     light=False,
     light_on: bool = False,
     manual_water_ml: int = 50,
+    deck_key_count: int = 15,
 ):
-    t, _, _, deck = _make(tmp_path, with_streamdeck=True)
+    t, _, _, deck = _make(tmp_path, with_streamdeck=True, deck_key_count=deck_key_count)
     d = t._dispatcher
     if waterer:
         d._waterer = RecordingSensor()
@@ -740,50 +741,102 @@ async def test_do_command_wires_new_verbs(tmp_path):
 # -- reserved slot: light ----------------------------------------------
 
 
-async def test_light_slot_off_shows_turn_on_action(tmp_path):
+async def test_light_main_slot_shows_neutral_lights_label(tmp_path):
     t, deck = _with_reserved(
         tmp_path, waterer=False, feeder=False, thermostat=False, light=True, light_on=False,
     )
     await t._deck.push_layout()
     keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
-    # Slot 10 on a 15-key deck (15 - RESERVED_LIGHT_OFFSET=5).
-    assert keys["10"]["text"] == "Lights ON"
-    assert keys["10"]["color"] == "seagreen"
-    assert keys["10"]["text_color"] == "white"
-    assert keys["10"]["args"][0] == {"command": "light_toggle"}
+    # Slot 10 on a 15-key deck (15 - RESERVED_LIGHT_OFFSET=5). Label is static.
+    assert keys["10"]["text"] == "Lights"
+    assert keys["10"]["color"] == ""
+    assert keys["10"]["text_color"] == ""
+    assert keys["10"]["args"][0] == {"command": "light_show_controls"}
 
 
-async def test_light_slot_on_shows_turn_off_action(tmp_path):
+async def test_light_main_slot_label_is_neutral_when_bulb_on(tmp_path):
     t, deck = _with_reserved(
         tmp_path, waterer=False, feeder=False, thermostat=False, light=True, light_on=True,
     )
     await t._deck.push_layout()
     keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
-    assert keys["10"]["text"] == "Lights OFF"
+    assert keys["10"]["text"] == "Lights"
     assert keys["10"]["color"] == ""
 
 
-async def test_light_toggle_sends_set_with_flipped_state(tmp_path):
+async def test_light_show_controls_paints_overlay_on_xl(tmp_path):
     t, deck = _with_reserved(
         tmp_path, waterer=False, feeder=False, thermostat=False, light=True, light_on=False,
+        deck_key_count=32,
     )
-    # Prime state; otherwise light_toggle would read status first.
-    t._dispatcher._light_on = False
-    resp = await t._light_toggle_and_repaint({})
-    assert resp["on"] is True
-    assert {"command": "set", "on": True} in t._dispatcher._light.commands
-    # Repaint shows the action to go back (now on → "Lights OFF").
+    await t.do_command({"command": "light_show_controls"})
     keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
-    assert keys["10"]["text"] == "Lights OFF"
+    # Back + 4 presets at fixed XL slots, Turn on/off at the Lights idle slot.
+    assert keys["24"]["text"] == "Back"
+    assert keys["24"]["args"][0] == {"command": "light_cancel"}
+    assert keys["25"]["text"] == "Nightlight"
+    assert keys["25"]["args"][0] == {"command": "light_set_preset", "preset": "nightlight"}
+    assert keys["26"]["text"] == "Evening"
+    assert keys["28"]["text"] == "Reading"
+    assert keys["29"]["text"] == "Bright"
+    # Turn on/off at slot 27 (32 - RESERVED_LIGHT_OFFSET).
+    assert keys["27"]["text"] == "Lights ON"
+    assert keys["27"]["args"][0] == {"command": "light_toggle"}
 
 
-async def test_light_toggle_verb_wired_through_do_command(tmp_path):
-    t, _ = _with_reserved(
-        tmp_path, waterer=False, feeder=False, thermostat=False, light=True, light_on=True,
+async def test_light_cancel_returns_to_main_layout(tmp_path):
+    t, deck = _with_reserved(
+        tmp_path, waterer=False, feeder=False, thermostat=False, light=True, light_on=False,
+        deck_key_count=32,
     )
-    t._dispatcher._light_on = True
-    r = await t.do_command({"command": "light_toggle"})
-    assert r["on"] is False
+    await t.do_command({"command": "light_show_controls"})
+    await t.do_command({"command": "light_cancel"})
+    keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
+    assert keys["27"]["text"] == "Lights"
+    assert keys["27"]["args"][0] == {"command": "light_show_controls"}
+
+
+async def test_light_set_preset_sends_set_and_stays_on_overlay(tmp_path):
+    t, deck = _with_reserved(
+        tmp_path, waterer=False, feeder=False, thermostat=False, light=True, light_on=False,
+        deck_key_count=32,
+    )
+    await t.do_command({"command": "light_show_controls"})
+    resp = await t.do_command({"command": "light_set_preset", "preset": "reading"})
+    assert resp == {"ok": True, "preset": "reading"}
+    assert {
+        "command": "set", "on": True, "brightness_pct": 80, "color_temp_k": 3500,
+    } in t._dispatcher._light.commands
+    # Still on the overlay — Back/Reading slots are still visible.
+    keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
+    assert keys["24"]["text"] == "Back"
+    assert keys["28"]["text"] == "Reading"
+    # Toggle button now says "Lights OFF" because the preset turned the bulb on.
+    assert keys["27"]["text"] == "Lights OFF"
+
+
+async def test_light_toggle_on_overlay_repaints_overlay(tmp_path):
+    t, deck = _with_reserved(
+        tmp_path, waterer=False, feeder=False, thermostat=False, light=True, light_on=False,
+        deck_key_count=32,
+    )
+    await t.do_command({"command": "light_show_controls"})
+    t._dispatcher._light_on = False
+    resp = await t.do_command({"command": "light_toggle"})
+    assert resp["on"] is True
+    keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
+    # Still on the overlay, toggle label flipped.
+    assert keys["24"]["text"] == "Back"
+    assert keys["27"]["text"] == "Lights OFF"
+
+
+async def test_light_set_preset_unknown_preset_raises(tmp_path):
+    t, _ = _with_reserved(
+        tmp_path, waterer=False, feeder=False, thermostat=False, light=True, light_on=False,
+        deck_key_count=32,
+    )
+    with pytest.raises(ValueError, match="unknown preset"):
+        await t.do_command({"command": "light_set_preset", "preset": "zzz"})
 
 
 async def test_light_absent_when_no_dep(tmp_path):

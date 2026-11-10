@@ -50,6 +50,21 @@ MUSIC_FOCUS_PLAYLISTS_SLOT_XL = 12
 MUSIC_FOCUS_ACCOUNT_SLOTS_XL = (11, 13)
 FEED_CONFIRM_BACK_SLOT_XL = 19
 FEED_CONFIRM_CONFIRM_SLOT_XL = 20
+# Light controls overlay: Back + Turn on/off + 4 presets on the last row (24-31 on XL).
+# Turn on/off stays at the same slot as the idle Lights button (deck - RESERVED_LIGHT_OFFSET)
+# so the tap continuity is preserved.
+LIGHT_CONTROLS_BACK_SLOT_XL = 24
+LIGHT_CONTROLS_NIGHTLIGHT_SLOT_XL = 25
+LIGHT_CONTROLS_EVENING_SLOT_XL = 26
+LIGHT_CONTROLS_READING_SLOT_XL = 28
+LIGHT_CONTROLS_BRIGHT_SLOT_XL = 29
+# Values match the monitor-system Lights page so streamdeck and web stay in sync.
+LIGHT_PRESETS: list[dict] = [
+    {"key": "reading", "label": "Reading", "brightness_pct": 80, "color_temp_k": 3500},
+    {"key": "evening", "label": "Evening", "brightness_pct": 40, "color_temp_k": 2500},
+    {"key": "nightlight", "label": "Nightlight", "brightness_pct": 5, "color_temp_k": 2200},
+    {"key": "bright", "label": "Bright", "brightness_pct": 100, "color_temp_k": 4500},
+]
 MUSIC_PLAYLISTS_CONTENT_SLOTS_XL = (8, 9, 10, 11, 12, 13, 14, 15)
 MUSIC_PLAYLISTS_BACK_SLOT_XL = 18
 MUSIC_PLAYLISTS_NEXT_SLOT_XL = 22
@@ -626,6 +641,18 @@ class HomeActionDispatcher:
         }
 
     def _light_key_config(self) -> dict:
+        return {
+            "text": "Lights",
+            "color": "",
+            "text_color": "",
+            "component": self._component_name,
+            "method": "do_command",
+            "args": [{"command": "light_show_controls"}],
+        }
+
+    def _light_toggle_key_config(self) -> dict:
+        # Shown on the controls overlay. Label/color mirror the previous idle
+        # Lights button so the action feels identical once the overlay is up.
         on = bool(self._light_on)
         target_on = not on
         return {
@@ -636,6 +663,54 @@ class HomeActionDispatcher:
             "method": "do_command",
             "args": [{"command": "light_toggle"}],
         }
+
+    def light_controls_key_configs(self, deck_key_count: int) -> dict[int, dict]:
+        toggle_slot = deck_key_count - RESERVED_LIGHT_OFFSET
+        back_cfg = {
+            "text": "Back",
+            "color": "red",
+            "text_color": "white",
+            "component": self._component_name,
+            "method": "do_command",
+            "args": [{"command": "light_cancel"}],
+        }
+        out: dict[int, dict] = {
+            LIGHT_CONTROLS_BACK_SLOT_XL: back_cfg,
+            toggle_slot: self._light_toggle_key_config(),
+            LIGHT_CONTROLS_NIGHTLIGHT_SLOT_XL: self._light_preset_key_config(LIGHT_PRESETS[2]),
+            LIGHT_CONTROLS_EVENING_SLOT_XL: self._light_preset_key_config(LIGHT_PRESETS[1]),
+            LIGHT_CONTROLS_READING_SLOT_XL: self._light_preset_key_config(LIGHT_PRESETS[0]),
+            LIGHT_CONTROLS_BRIGHT_SLOT_XL: self._light_preset_key_config(LIGHT_PRESETS[3]),
+        }
+        return out
+
+    def _light_preset_key_config(self, preset: dict) -> dict:
+        return {
+            "text": preset["label"],
+            "color": "",
+            "text_color": "",
+            "component": self._component_name,
+            "method": "do_command",
+            "args": [{"command": "light_set_preset", "preset": preset["key"]}],
+        }
+
+    async def light_set_preset(self, payload: Any) -> dict:
+        if self._light is None:
+            raise RuntimeError("no light configured")
+        key = (payload or {}).get("preset") if isinstance(payload, Mapping) else None
+        match = next((p for p in LIGHT_PRESETS if p["key"] == key), None)
+        if match is None:
+            raise ValueError(f"unknown preset: {key!r}")
+        await self._light.do_command(
+            {
+                "command": "set",
+                "on": True,
+                "brightness_pct": match["brightness_pct"],
+                "color_temp_k": match["color_temp_k"],
+            }
+        )
+        self._light_on = True
+        return {"ok": True, "preset": match["key"]}
 
     # TECH DEBT — see top of file.
     def _music_key_config(self) -> dict:
