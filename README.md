@@ -40,6 +40,7 @@ batteries — but the mechanics don't care what you're counting.
 | `waterer`        | string | no       | Optional waterer generic service. Adds a "Water" key at slot `N-3`.              |
 | `feeder`         | string | no       | Optional feeder generic service. Adds a "Feed" key at slot `N-2`.                |
 | `thermostat_switch` | string | no    | Optional switch component. Adds a "Thermostat ON/OFF" toggle at slot `N-1`.      |
+| `shades`         | string | no       | Optional `viam:switchbot:curtain` component. Adds a "Shades OPEN/CLOSE" toggle at slot `N-6`. |
 | `manual_water_ml` | int   | no       | Amount to dispense on a manual Water button press. Defaults to `50`.             |
 
 The `state_sensor` should be configured with `queue_capacity: 1` and no data
@@ -120,6 +121,9 @@ before the first mutation.
 - `thermostat_toggle({})` — Reserved-slot callback. Reads current position of
   the configured `thermostat_switch` and flips it (0↔1). Re-pushes the deck
   layout so the label updates immediately.
+- `shades_toggle({})` — Reserved-slot callback. Sends `open` or `close` to the
+  configured `shades` curtain (open = `slide_position < 50`). Curtain status
+  is read at most every 2 minutes to stay under SwitchBot's daily API cap.
 - `press({id})` — Stream Deck item-key callback. Toggles focus mode: first
   press hides every other item and shows `−` / `<name> <count>` / `+` on
   slots 6/7/8; pressing the item key again returns to the full grid.

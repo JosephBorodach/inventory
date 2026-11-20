@@ -43,6 +43,23 @@ class RecordingLight:
         return {"ok": True}
 
 
+class RecordingCurtain:
+    def __init__(self, slide_position: int = 100):
+        self.slide_position = slide_position
+        self.commands: list[dict] = []
+
+    async def do_command(self, cmd, **kwargs):
+        self.commands.append(cmd)
+        verb = cmd.get("command")
+        if verb == "status":
+            return {"slide_position": self.slide_position, "moving": False}
+        if verb == "open":
+            self.slide_position = 0
+        elif verb == "close":
+            self.slide_position = 100
+        return {"ok": True}
+
+
 def _make(
     tmp_path: Path,
     with_events: bool = False,
@@ -609,6 +626,8 @@ def _with_reserved(
     thermostat_position: int = 0,
     light=False,
     light_on: bool = False,
+    shades=False,
+    shades_slide_position: int = 100,
     manual_water_ml: int = 50,
     deck_key_count: int = 15,
 ):
@@ -626,6 +645,9 @@ def _with_reserved(
     if light:
         d._light = RecordingLight(on=light_on)
         d._light_name = "bedroom-lamp"
+    if shades:
+        d._shades = RecordingCurtain(slide_position=shades_slide_position)
+        d._shades_name = "curtain"
     d._manual_water_ml = manual_water_ml
     return t, deck
 
@@ -844,6 +866,89 @@ async def test_light_absent_when_no_dep(tmp_path):
     await t._deck.push_layout()
     keys = [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
     assert keys["10"]["text"] == " "
+
+
+# -- reserved slot: shades ---------------------------------------------
+
+
+def _shades_only(tmp_path, **kwargs):
+    return _with_reserved(
+        tmp_path, waterer=False, feeder=False, thermostat=False, shades=True, **kwargs
+    )
+
+
+def _last_keys(deck) -> dict:
+    return [c for c in deck.commands if "update_display" in c][-1]["update_display"]["keys"]
+
+
+async def test_shades_slot_closed_shows_open_action(tmp_path):
+    t, deck = _shades_only(tmp_path, shades_slide_position=100)
+    await t._deck.push_layout()
+    keys = _last_keys(deck)
+    # Slot 9 on a 15-key deck (15 - RESERVED_SHADES_OFFSET=6).
+    assert keys["9"]["text"] == "Shades OPEN"
+    assert keys["9"]["color"] == "seagreen"
+    assert keys["9"]["text_color"] == "white"
+    assert keys["9"]["args"][0] == {"command": "shades_toggle"}
+
+
+async def test_shades_slot_open_shows_close_action(tmp_path):
+    t, deck = _shades_only(tmp_path, shades_slide_position=0)
+    await t._deck.push_layout()
+    keys = _last_keys(deck)
+    assert keys["9"]["text"] == "Shades CLOSE"
+    assert keys["9"]["color"] == ""
+
+
+async def test_shades_slot_on_xl_sits_left_of_lights(tmp_path):
+    t, deck = _shades_only(tmp_path, light=True, deck_key_count=32)
+    await t._deck.push_layout()
+    keys = _last_keys(deck)
+    assert keys["26"]["args"][0] == {"command": "shades_toggle"}
+    assert keys["27"]["args"][0] == {"command": "light_show_controls"}
+
+
+async def test_shades_toggle_closes_when_open_and_repaints(tmp_path):
+    t, deck = _shades_only(tmp_path, shades_slide_position=0)
+    resp = await t.do_command({"command": "shades_toggle"})
+    assert resp == {"ok": True, "open": False}
+    curtain = t._dispatcher._shades
+    assert curtain.commands == [{"command": "status"}, {"command": "close"}]
+    assert _last_keys(deck)["9"]["text"] == "Shades OPEN"
+
+
+async def test_shades_toggle_opens_when_closed(tmp_path):
+    t, _ = _shades_only(tmp_path, shades_slide_position=100)
+    resp = await t.do_command({"command": "shades_toggle"})
+    assert resp["open"] is True
+    assert {"command": "open"} in t._dispatcher._shades.commands
+
+
+async def test_shades_status_reads_are_throttled(tmp_path):
+    t, _ = _shades_only(tmp_path)
+    await t._deck.push_layout()
+    await t._deck.push_layout()
+    await t._deck.push_layout()
+    statuses = [c for c in t._dispatcher._shades.commands if c["command"] == "status"]
+    assert len(statuses) == 1
+
+
+async def test_shades_repaint_after_toggle_trusts_optimistic_state(tmp_path):
+    t, deck = _shades_only(tmp_path, shades_slide_position=100)
+    await t._deck.push_layout()
+    curtain = t._dispatcher._shades
+    await t.do_command({"command": "shades_toggle"})
+    # Curtain still reports closed mid-travel; the label must not flip back.
+    curtain.slide_position = 100
+    await t._deck.push_layout()
+    assert _last_keys(deck)["9"]["text"] == "Shades CLOSE"
+    assert [c for c in curtain.commands if c["command"] == "status"] == [{"command": "status"}]
+
+
+async def test_shades_absent_when_no_dep(tmp_path):
+    t, deck = _with_reserved(tmp_path, waterer=False, feeder=False, thermostat=False)
+    await t._deck.push_layout()
+    assert _last_keys(deck)["9"]["text"] == " "
 
 
 # -- reorder_deck ------------------------------------------------------

@@ -31,6 +31,11 @@ RESERVED_FEED_OFFSET = 2
 RESERVED_THERMOSTAT_OFFSET = 1
 RESERVED_MUSIC_OFFSET = 4  # TECH DEBT — see top of file.
 RESERVED_LIGHT_OFFSET = 5
+RESERVED_SHADES_OFFSET = 6
+# SwitchBot's cloud API caps each token at 10k calls/day across every device on
+# the account, and slide_position lags while the curtain is still travelling.
+# Throttle status reads, and trust the optimistic post-toggle state meanwhile.
+SHADES_STATE_REFRESH_SEC = 120.0
 # Spotify's GET /me/player lags ~1-2s behind PUT /me/player/{play,pause}.
 # Trust the optimistic post-mutation state for this long before letting a
 # background refresh overwrite it.
@@ -202,13 +207,17 @@ class HomeActionDispatcher:
         self._light: GenericService | None = None
         self._light_name: str = ""
         self._light_on: bool | None = None
+        self._shades: GenericService | None = None
+        self._shades_name: str = ""
+        self._shades_open: bool | None = None
+        self._shades_checked_at: float | None = None
         self._slots: dict = {}
 
     @staticmethod
     def validate_config_attrs(attrs: dict) -> list[str]:
         optional: list[str] = []
         # `music` is TECH DEBT — see top of file.
-        for key in ("waterer", "feeder", "thermostat_switch", "music", "light"):
+        for key in ("waterer", "feeder", "thermostat_switch", "music", "light", "shades"):
             val = attrs.get(key)
             if val is not None:
                 if not isinstance(val, str) or not val:
@@ -232,6 +241,7 @@ class HomeActionDispatcher:
         self._thermostat_switch_name = str(attrs.get("thermostat_switch") or "")
         self._music_name = str(attrs.get("music") or "")  # TECH DEBT — see top of file.
         self._light_name = str(attrs.get("light") or "")
+        self._shades_name = str(attrs.get("shades") or "")
         self._manual_water_ml = int(attrs.get("manual_water_ml") or DEFAULT_MANUAL_WATER_ML)
         self._slots = _normalize_slots(attrs.get("slots") or {})
 
@@ -240,6 +250,7 @@ class HomeActionDispatcher:
         self._thermostat_switch = None
         self._music = None  # TECH DEBT — see top of file.
         self._light = None
+        self._shades = None
         for name, resource in dependencies.items():
             if (
                 self._waterer_name
@@ -272,6 +283,12 @@ class HomeActionDispatcher:
                 and isinstance(resource, Generic | GenericService)
             ):
                 self._light = resource
+            elif (
+                self._shades_name
+                and name.name == self._shades_name
+                and isinstance(resource, Generic | GenericService)
+            ):
+                self._shades = resource
 
         if self._waterer_name and self._waterer is None:
             LOGGER.warning(
@@ -302,6 +319,12 @@ class HomeActionDispatcher:
                 "light %r not resolved (need Generic component or service); "
                 "reserved light key disabled",
                 self._light_name,
+            )
+        if self._shades_name and self._shades is None:
+            LOGGER.warning(
+                "shades %r not resolved (need Generic component or service); "
+                "reserved shades key disabled",
+                self._shades_name,
             )
 
     async def water_manual(self, _payload: Any) -> dict:
@@ -336,6 +359,19 @@ class HomeActionDispatcher:
         await self._light.do_command({"command": "set", "on": target})
         self._light_on = target
         return {"ok": True, "on": target}
+
+    async def shades_toggle(self, _payload: Any) -> dict:
+        if self._shades is None:
+            raise RuntimeError("no shades configured")
+        is_open = self._shades_open
+        if is_open is None:
+            await self.refresh_shades_state(force=True)
+            is_open = bool(self._shades_open)
+        target_open = not is_open
+        await self._shades.do_command({"command": "open" if target_open else "close"})
+        self._shades_open = target_open
+        self._shades_checked_at = time.monotonic()
+        return {"ok": True, "open": target_open}
 
     # TECH DEBT — see top of file.
     async def music_play(self, _payload: Any) -> dict:
@@ -540,6 +576,29 @@ class HomeActionDispatcher:
                 if isinstance(state, str):
                     self._light_on = state.upper() == "ON"
 
+    async def refresh_shades_state(self, force: bool = False) -> None:
+        if self._shades is None:
+            self._shades_open = None
+            return
+        now = time.monotonic()
+        if (
+            not force
+            and self._shades_checked_at is not None
+            and now - self._shades_checked_at < SHADES_STATE_REFRESH_SEC
+        ):
+            return
+        self._shades_checked_at = now
+        try:
+            status = await self._shades.do_command({"command": "status"})
+        except Exception as e:
+            LOGGER.warning("shades state read failed: %s", e)
+            return
+        if isinstance(status, Mapping):
+            pos = status.get("slide_position")
+            # SwitchBot slide_position: 0 = fully open, 100 = fully closed.
+            if isinstance(pos, int | float) and not isinstance(pos, bool):
+                self._shades_open = pos < 50
+
     def reserved_slot_map(self, deck_key_count: int) -> dict[int, str]:
         # Count back from the end so slots always sit on the bottom-right.
         reserved: dict[int, str] = {}
@@ -549,6 +608,9 @@ class HomeActionDispatcher:
             reserved[deck_key_count - RESERVED_FEED_OFFSET] = "feed"
         if self._thermostat_switch is not None:
             reserved[deck_key_count - RESERVED_THERMOSTAT_OFFSET] = "thermostat"
+        # Before music: on a mini deck both land on slot 0 and music keeps it.
+        if self._shades is not None:
+            reserved[deck_key_count - RESERVED_SHADES_OFFSET] = "shades"
         # TECH DEBT — see top of file. Mini decks anchor Music top-left.
         if self._music is not None:
             reserved[_music_slot(deck_key_count)] = "music"
@@ -576,6 +638,8 @@ class HomeActionDispatcher:
             return self._music_key_config()
         if kind == "light":
             return self._light_key_config()
+        if kind == "shades":
+            return self._shades_key_config()
         return None
 
     def _water_key_config(self) -> dict:
@@ -662,6 +726,17 @@ class HomeActionDispatcher:
             "component": self._component_name,
             "method": "do_command",
             "args": [{"command": "light_toggle"}],
+        }
+
+    def _shades_key_config(self) -> dict:
+        target_open = not bool(self._shades_open)
+        return {
+            "text": "Shades OPEN" if target_open else "Shades CLOSE",
+            "color": "seagreen" if target_open else "",
+            "text_color": "white" if target_open else "",
+            "component": self._component_name,
+            "method": "do_command",
+            "args": [{"command": "shades_toggle"}],
         }
 
     def light_controls_key_configs(self, deck_key_count: int) -> dict[int, dict]:
