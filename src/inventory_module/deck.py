@@ -142,6 +142,7 @@ class DeckRenderer:
             await self._dispatcher.refresh_music_state()
             await self._dispatcher.refresh_light_state()
             await self._dispatcher.refresh_shades_state()
+            await self._dispatcher.refresh_christmas_state()
         if focused is not None:
             keys = self._focus_layout(focused)
         elif self._feed_confirm_focused:

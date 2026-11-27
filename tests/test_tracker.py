@@ -628,6 +628,8 @@ def _with_reserved(
     light_on: bool = False,
     shades=False,
     shades_slide_position: int = 100,
+    christmas=False,
+    christmas_position: int = 0,
     manual_water_ml: int = 50,
     deck_key_count: int = 15,
 ):
@@ -648,6 +650,9 @@ def _with_reserved(
     if shades:
         d._shades = RecordingCurtain(slide_position=shades_slide_position)
         d._shades_name = "curtain"
+    if christmas:
+        d._christmas_switch = RecordingSwitch(position=christmas_position)
+        d._christmas_switch_name = "christmas-tree"
     d._manual_water_ml = manual_water_ml
     return t, deck
 
@@ -949,6 +954,61 @@ async def test_shades_absent_when_no_dep(tmp_path):
     t, deck = _with_reserved(tmp_path, waterer=False, feeder=False, thermostat=False)
     await t._deck.push_layout()
     assert _last_keys(deck)["9"]["text"] == " "
+
+
+# -- reserved slot: christmas ------------------------------------------
+
+
+def _christmas_only(tmp_path, **kwargs):
+    return _with_reserved(
+        tmp_path, waterer=False, feeder=False, thermostat=False, christmas=True, **kwargs
+    )
+
+
+async def test_christmas_slot_off_shows_turn_on_action(tmp_path):
+    t, deck = _christmas_only(tmp_path, christmas_position=0)
+    await t._deck.push_layout()
+    keys = _last_keys(deck)
+    # Slot 8 on a 15-key deck (15 - RESERVED_CHRISTMAS_OFFSET=7).
+    assert keys["8"]["text"] == "Christmas ON"
+    assert keys["8"]["color"] == "seagreen"
+    assert keys["8"]["text_color"] == "white"
+    assert keys["8"]["args"][0] == {"command": "christmas_toggle"}
+
+
+async def test_christmas_slot_on_shows_turn_off_action(tmp_path):
+    t, deck = _christmas_only(tmp_path, christmas_position=1)
+    await t._deck.push_layout()
+    keys = _last_keys(deck)
+    assert keys["8"]["text"] == "Christmas OFF"
+    assert keys["8"]["color"] == ""
+
+
+async def test_christmas_slot_on_xl_sits_left_of_shades(tmp_path):
+    t, deck = _christmas_only(tmp_path, shades=True, deck_key_count=32)
+    await t._deck.push_layout()
+    keys = _last_keys(deck)
+    assert keys["25"]["args"][0] == {"command": "christmas_toggle"}
+    assert keys["26"]["args"][0] == {"command": "shades_toggle"}
+
+
+async def test_christmas_toggle_flips_switch_and_repaints(tmp_path):
+    t, deck = _christmas_only(tmp_path, christmas_position=0)
+    resp = await t.do_command({"command": "christmas_toggle"})
+    assert resp == {"ok": True, "position": 1}
+    assert t._dispatcher._christmas_switch.set_calls == [1]
+    assert _last_keys(deck)["8"]["text"] == "Christmas OFF"
+
+
+async def test_christmas_skipped_on_mini_deck(tmp_path):
+    t, _ = _christmas_only(tmp_path, deck_key_count=6)
+    assert "christmas" not in t._dispatcher.reserved_slot_map(6).values()
+
+
+async def test_christmas_absent_when_no_dep(tmp_path):
+    t, deck = _with_reserved(tmp_path, waterer=False, feeder=False, thermostat=False)
+    await t._deck.push_layout()
+    assert _last_keys(deck)["8"]["text"] == " "
 
 
 # -- reorder_deck ------------------------------------------------------

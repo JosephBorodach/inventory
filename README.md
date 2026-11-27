@@ -41,6 +41,7 @@ batteries — but the mechanics don't care what you're counting.
 | `feeder`         | string | no       | Optional feeder generic service. Adds a "Feed" key at slot `N-2`.                |
 | `thermostat_switch` | string | no    | Optional switch component. Adds a "Thermostat ON/OFF" toggle at slot `N-1`.      |
 | `shades`         | string | no       | Optional `viam:switchbot:curtain` component. Adds a "Shades OPEN/CLOSE" toggle at slot `N-6`. |
+| `christmas_switch` | string | no     | Optional switch component (e.g. a `viam:zigbee2mqtt:switch` plug). Adds a "Christmas ON/OFF" toggle at slot `N-7`. Skipped on decks with 7 or fewer keys. |
 | `manual_water_ml` | int   | no       | Amount to dispense on a manual Water button press. Defaults to `50`.             |
 
 The `state_sensor` should be configured with `queue_capacity: 1` and no data
@@ -124,6 +125,8 @@ before the first mutation.
 - `shades_toggle({})` — Reserved-slot callback. Sends `open` or `close` to the
   configured `shades` curtain (open = `slide_position < 50`). Curtain status
   is read at most every 2 minutes to stay under SwitchBot's daily API cap.
+- `christmas_toggle({})` — Reserved-slot callback. Reads the configured
+  `christmas_switch` position and flips it (0↔1), then re-pushes the deck.
 - `press({id})` — Stream Deck item-key callback. Toggles focus mode: first
   press hides every other item and shows `−` / `<name> <count>` / `+` on
   slots 6/7/8; pressing the item key again returns to the full grid.
