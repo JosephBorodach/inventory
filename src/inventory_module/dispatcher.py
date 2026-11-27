@@ -32,6 +32,7 @@ RESERVED_THERMOSTAT_OFFSET = 1
 RESERVED_MUSIC_OFFSET = 4  # TECH DEBT — see top of file.
 RESERVED_LIGHT_OFFSET = 5
 RESERVED_SHADES_OFFSET = 6
+RESERVED_CHRISTMAS_OFFSET = 7
 # SwitchBot's cloud API caps each token at 10k calls/day across every device on
 # the account, and slide_position lags while the curtain is still travelling.
 # Throttle status reads, and trust the optimistic post-toggle state meanwhile.
@@ -211,13 +212,19 @@ class HomeActionDispatcher:
         self._shades_name: str = ""
         self._shades_open: bool | None = None
         self._shades_checked_at: float | None = None
+        self._christmas_switch: Switch | None = None
+        self._christmas_switch_name: str = ""
+        self._christmas_on: bool | None = None
         self._slots: dict = {}
 
     @staticmethod
     def validate_config_attrs(attrs: dict) -> list[str]:
         optional: list[str] = []
         # `music` is TECH DEBT — see top of file.
-        for key in ("waterer", "feeder", "thermostat_switch", "music", "light", "shades"):
+        for key in (
+            "waterer", "feeder", "thermostat_switch", "music", "light", "shades",
+            "christmas_switch",
+        ):
             val = attrs.get(key)
             if val is not None:
                 if not isinstance(val, str) or not val:
@@ -242,6 +249,7 @@ class HomeActionDispatcher:
         self._music_name = str(attrs.get("music") or "")  # TECH DEBT — see top of file.
         self._light_name = str(attrs.get("light") or "")
         self._shades_name = str(attrs.get("shades") or "")
+        self._christmas_switch_name = str(attrs.get("christmas_switch") or "")
         self._manual_water_ml = int(attrs.get("manual_water_ml") or DEFAULT_MANUAL_WATER_ML)
         self._slots = _normalize_slots(attrs.get("slots") or {})
 
@@ -251,6 +259,7 @@ class HomeActionDispatcher:
         self._music = None  # TECH DEBT — see top of file.
         self._light = None
         self._shades = None
+        self._christmas_switch = None
         for name, resource in dependencies.items():
             if (
                 self._waterer_name
@@ -289,6 +298,12 @@ class HomeActionDispatcher:
                 and isinstance(resource, Generic | GenericService)
             ):
                 self._shades = resource
+            elif (
+                self._christmas_switch_name
+                and name.name == self._christmas_switch_name
+                and isinstance(resource, Switch)
+            ):
+                self._christmas_switch = resource
 
         if self._waterer_name and self._waterer is None:
             LOGGER.warning(
@@ -326,6 +341,12 @@ class HomeActionDispatcher:
                 "reserved shades key disabled",
                 self._shades_name,
             )
+        if self._christmas_switch_name and self._christmas_switch is None:
+            LOGGER.warning(
+                "christmas_switch %r not resolved (need Switch component); "
+                "reserved christmas key disabled",
+                self._christmas_switch_name,
+            )
 
     async def water_manual(self, _payload: Any) -> dict:
         if self._waterer is None:
@@ -346,6 +367,15 @@ class HomeActionDispatcher:
         new_pos = 0 if pos == 1 else 1
         await self._thermostat_switch.set_position(new_pos)
         self._thermostat_on = new_pos == 1
+        return {"ok": True, "position": new_pos}
+
+    async def christmas_toggle(self, _payload: Any) -> dict:
+        if self._christmas_switch is None:
+            raise RuntimeError("no christmas_switch configured")
+        pos = await self._christmas_switch.get_position()
+        new_pos = 0 if pos == 1 else 1
+        await self._christmas_switch.set_position(new_pos)
+        self._christmas_on = new_pos == 1
         return {"ok": True, "position": new_pos}
 
     async def light_toggle(self, _payload: Any) -> dict:
@@ -560,6 +590,17 @@ class HomeActionDispatcher:
             return
         self._thermostat_on = pos == 1
 
+    async def refresh_christmas_state(self) -> None:
+        if self._christmas_switch is None:
+            self._christmas_on = None
+            return
+        try:
+            pos = await self._christmas_switch.get_position()
+        except Exception as e:
+            LOGGER.warning("christmas switch state read failed: %s", e)
+            return
+        self._christmas_on = pos == 1
+
     async def refresh_light_state(self) -> None:
         if self._light is None:
             self._light_on = None
@@ -611,6 +652,8 @@ class HomeActionDispatcher:
         # Before music: on a mini deck both land on slot 0 and music keeps it.
         if self._shades is not None:
             reserved[deck_key_count - RESERVED_SHADES_OFFSET] = "shades"
+        if self._christmas_switch is not None and deck_key_count > RESERVED_CHRISTMAS_OFFSET:
+            reserved[deck_key_count - RESERVED_CHRISTMAS_OFFSET] = "christmas"
         # TECH DEBT — see top of file. Mini decks anchor Music top-left.
         if self._music is not None:
             reserved[_music_slot(deck_key_count)] = "music"
@@ -640,6 +683,8 @@ class HomeActionDispatcher:
             return self._light_key_config()
         if kind == "shades":
             return self._shades_key_config()
+        if kind == "christmas":
+            return self._christmas_key_config()
         return None
 
     def _water_key_config(self) -> dict:
@@ -702,6 +747,17 @@ class HomeActionDispatcher:
             "component": self._component_name,
             "method": "do_command",
             "args": [{"command": "thermostat_toggle"}],
+        }
+
+    def _christmas_key_config(self) -> dict:
+        target_on = not bool(self._christmas_on)
+        return {
+            "text": "Christmas ON" if target_on else "Christmas OFF",
+            "color": "seagreen" if target_on else "",
+            "text_color": "white" if target_on else "",
+            "component": self._component_name,
+            "method": "do_command",
+            "args": [{"command": "christmas_toggle"}],
         }
 
     def _light_key_config(self) -> dict:
